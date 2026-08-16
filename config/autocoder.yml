@@ -1,0 +1,110 @@
+# Local / server config — set secrets and URLs via .env (never commit real tokens).
+#
+# Required for real runs:
+#   JIRA_BASE_URL=https://your-site.atlassian.net
+#   GITHUB_REPO_URL=https://github.com/your-org/your-repo
+#   JIRA_EMAIL=you@company.com
+#   JIRA_TOKEN=...
+#   DEEPSEEK_API_KEY=...          # cheap: coding + summarize
+#   ANTHROPIC_API_KEY=...         # costly: planning (or OPENAI_API_KEY)
+#
+# Ticket key is NOT in this file — pass it at runtime:
+#   dotnet run --project src/AutoCoder.Cli -- run --ticket AC-101
+
+triggers:
+  mode: both
+
+webhooks:
+  enabled: true
+  listen_port: 8081
+  path: /webhook/jira
+  require_secret: false
+  secret_env: JIRA_WEBHOOK_SECRET
+  dry_run: true
+  artifacts_directory: runs
+
+agents:
+  default:
+    type: routed
+    cheap:
+      type: deepseek
+      model: deepseek-v4-flash
+      endpoint: https://api.deepseek.com/v1
+    costly:
+      type: anthropic
+      model: claude-sonnet-5
+    role_tiers:
+      summarize: cheap
+      comment: cheap
+      scout: cheap
+      coding: cheap
+      planning: costly
+      thinking: costly
+      decision: costly
+      primary: costly
+  # Force OpenAI as costly instead: AUTOCODER_COSTLY_PROVIDER=openai
+  # Force Groq as cheap/fast instead: AUTOCODER_CHEAP_PROVIDER=groq
+  deepseek:
+    type: deepseek
+    model: deepseek-v4-flash
+    endpoint: https://api.deepseek.com/v1
+  groq:
+    type: groq
+    model: llama-3.1-8b-instant
+    endpoint: https://api.groq.com/openai/v1
+
+repos:
+  primary:
+    type: github
+    url: https://github.com/PraveenYzfr/SimpleApp
+    default_branch: master
+    allowlist:
+      - github.com/PraveenYzfr/SimpleApp
+      - https://github.com/PraveenYzfr/SimpleApp
+
+trackers:
+  company-jira:
+    type: jira
+    # Prefer env JIRA_BASE_URL (public site root, no /browse/...).
+    url: ${JIRA_BASE_URL}
+    auth: jira_token
+    open_states: ["To Do", "AssignedToAgent", "In Progress"]
+    done_status: "In Review"
+
+projects:
+  primary:
+    agent: default
+    tracker: company-jira
+    repos: [primary]
+    pipeline: fix-bug
+    human_approval: required
+    auto_merge: false
+    jira_trigger:
+      project_resolution:
+        strategy: tag
+        value: autocoder
+      # Human moves ticket to this status → webhook starts AutoCoder
+      trigger_statuses: ["AssignedToAgent"]
+      comment_keyword: "@autocoder"
+
+sandbox:
+  type: docker
+  default_image: mcr.microsoft.com/dotnet/sdk:8.0
+  command_allowlist: ["dotnet", "git", "npm", "python", "pytest"]
+  max_runtime_minutes: 30
+  memory: 2g
+
+poll:
+  enabled: false
+  interval_seconds: 300
+  jql: 'status = "AssignedToAgent"'
+
+secrets:
+  gemini_api_key: ${GEMINI_API_KEY}
+  deepseek_api_key: ${DEEPSEEK_API_KEY}
+  groq_api_key: ${GROQ_API_KEY}
+  openai_api_key: ${OPENAI_API_KEY}
+  anthropic_api_key: ${ANTHROPIC_API_KEY}
+  jira_webhook_secret: ${JIRA_WEBHOOK_SECRET}
+  jira_token: ${JIRA_TOKEN}
+  github_token: ${GITHUB_TOKEN}

@@ -1,0 +1,17 @@
+﻿{
+  "$schema": "http://json.schemastore.org/launchsettings.json",
+  "profiles": {
+    "AutoCoder.Server": {
+      "commandName": "Project",
+      "dotnetRunMessages": true,
+      "launchBrowser": false,
+      "applicationUrl": "http://0.0.0.0:8081",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "AUTOCODER_CONFIG": "..\\..\\config\\autocoder.yml",
+        "AUTOCODER_WEBHOOKS_ENABLED": "true",
+        "AUTOCODER_TRIGGERS_MODE": "both"
+      }
+    }
+  }
+}

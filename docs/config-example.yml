@@ -1,0 +1,117 @@
+# AutoCoder — example configuration
+#
+# Copy to autocoder.yml (or config/autocoder.yml) and set secrets via environment variables.
+# Never commit real tokens. Values under secrets: must be ${ENV} references.
+#
+# Switchable triggers (also via env):
+#   AUTOCODER_TRIGGERS_MODE=cli|webhook|both
+#   AUTOCODER_WEBHOOKS_ENABLED=true|false
+#   AUTOCODER_WEBHOOKS_DRY_RUN=true|false
+#   AUTOCODER_WEBHOOKS_PORT=8081
+
+triggers:
+  mode: both                    # cli | webhook | both
+
+webhooks:
+  enabled: false                # master switch for HTTP ingress
+  listen_port: 8081
+  path: /webhook/jira
+  require_secret: true
+  secret_env: JIRA_WEBHOOK_SECRET
+  dry_run: true                 # keep true until live adapters are ready
+  artifacts_directory: runs
+
+agents:
+  default:
+    type: routed                # routed | deepseek | groq | openai | anthropic | gemini
+    cheap:
+      type: deepseek            # coding, summarize, scout (Gemini Flash analog). groq for latency.
+      model: deepseek-v4-flash
+      endpoint: https://api.deepseek.com/v1
+    costly:
+      type: anthropic           # planning, thinking (Gemini Pro analog). openai | gemini also work
+      model: claude-sonnet-5
+    role_tiers:
+      summarize: cheap
+      coding: cheap
+      planning: costly
+      thinking: costly
+  # azure-openai-example:
+  #   type: azure_openai
+  #   endpoint: https://YOUR_RESOURCE.openai.azure.com/
+  #   api_version: "2024-10-21"
+  #   models:
+  #     planning: { model: gpt-4.1-mini, deployment: gpt-4.1-mini }
+  #     primary:  { model: gpt-4.1, deployment: gpt-4.1 }
+
+repos:
+  sample-api:
+    type: github
+    url: https://github.com/your-org/sample-api
+    default_branch: main
+    auth: github_token
+    # Only these remotes are allowed for this catalog entry
+    allowlist:
+      - github.com/your-org/sample-api
+
+trackers:
+  company-jira:
+    type: jira
+    url: https://your-org.atlassian.net
+    auth: jira_token
+    open_states: ["To Do", "AssignedToAgent", "In Progress"]
+    done_status: "In Review"
+    failed_status: "In Progress"
+    needs_clarification_status: "Blocked"
+
+projects:
+  sample-api:
+    agent: default
+    tracker: company-jira
+    repos: [sample-api]          # v1: single repo only
+    pipeline: fix-bug
+    human_approval: required     # required | optional (Phase 2)
+    auto_merge: false            # must stay false in v1
+    jira_trigger:
+      project_resolution:
+        strategy: tag
+        value: autocoder
+      trigger_statuses: ["AssignedToAgent"]
+      comment_keyword: "@autocoder"
+      secret: ${JIRA_WEBHOOK_SECRET}
+
+pipelines:
+  fix-bug:
+    steps:
+      - FetchTicket
+      - ResolveProject
+      - GeneratePlan
+      - ApprovalGate
+      - ProvisionSandbox
+      - ImplementAndTest
+      - CommitAndOpenPr
+      - WritebackTicket
+      - PersistRunResult
+
+sandbox:
+  type: docker                   # docker | local (Phase 0 dry-run uses none)
+  default_image: mcr.microsoft.com/dotnet/sdk:8.0
+  # Ticket text is never passed to a raw shell; only allowlisted commands run.
+  command_allowlist:
+    - "dotnet"
+    - "git"
+    - "npm"
+    - "pytest"
+
+limits:
+  max_usd_per_run: 5
+  max_tokens_per_run: 500000
+
+secrets:
+  gemini_api_key: ${GEMINI_API_KEY}
+  azure_openai_api_key: ${AZURE_OPENAI_API_KEY}
+  openai_api_key: ${OPENAI_API_KEY}
+  anthropic_api_key: ${ANTHROPIC_API_KEY}
+  github_token: ${GITHUB_TOKEN}
+  jira_token: ${JIRA_TOKEN}
+  jira_webhook_secret: ${JIRA_WEBHOOK_SECRET}

@@ -1,0 +1,137 @@
+using AutoCoder.Abstractions;
+using AutoCoder.Abstractions.Config;
+using AutoCoder.Core;
+using AutoCoder.Core.Config;
+using AutoCoder.Core.Jira;
+using AutoCoder.Core.Llm;
+using AutoCoder.Core.Pipelines;
+using AutoCoder.Core.Runs;
+
+namespace AutoCoder.Core.Webhooks;
+
+public sealed class WebhookTriggerDecision
+{
+    public bool ShouldRun { get; init; }
+    public string Reason { get; init; } = "";
+    public string? ProjectName { get; init; }
+    public ProjectOptions? Project { get; init; }
+}
+
+public static class WebhookTriggerFilter
+{
+    public static bool IsWebhookTriggerMode(TriggersOptions triggers)
+    {
+        var mode = triggers.Mode?.Trim().ToLowerInvariant() ?? "cli";
+        return mode is "webhook" or "both";
+    }
+
+    public static WebhookTriggerDecision Evaluate(AutoCoderOptions options, Ticket ticket)
+    {
+        ProjectCatalog.ApplyRuntimeOverlays(options);
+
+        foreach (var (name, project) in options.Projects)
+        {
+            var trigger = project.JiraTrigger;
+            if (trigger is null)
+                continue;
+
+            var tag = trigger.ProjectResolution?.Value;
+            if (!string.IsNullOrWhiteSpace(tag)
+                && !ticket.Labels.Any(l => string.Equals(l, tag, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            if (trigger.TriggerStatuses.Count > 0
+                && !trigger.TriggerStatuses.Any(s =>
+                    string.Equals(s, ticket.Status, StringComparison.OrdinalIgnoreCase)))
+            {
+                return new WebhookTriggerDecision
+                {
+                    ShouldRun = false,
+                    Reason = $"Matched project '{name}' but status '{ticket.Status}' not in trigger_statuses.",
+                    ProjectName = name,
+                    Project = project
+                };
+            }
+
+            return new WebhookTriggerDecision
+            {
+                ShouldRun = true,
+                Reason = $"Matched project '{name}'.",
+                ProjectName = name,
+                Project = project
+            };
+        }
+
+        if (options.Projects.Count == 1)
+        {
+            var only = options.Projects.First();
+            return new WebhookTriggerDecision
+            {
+                ShouldRun = true,
+                Reason = $"Using sole configured project '{only.Key}'.",
+                ProjectName = only.Key,
+                Project = only.Value
+            };
+        }
+
+        return new WebhookTriggerDecision
+        {
+            ShouldRun = false,
+            Reason = "No project matched ticket labels / jira_trigger."
+        };
+    }
+}
+
+public sealed class WebhookRunDispatcher
+{
+    private readonly AutoCoderOptions _options;
+
+    public WebhookRunDispatcher(AutoCoderOptions options) => _options = options;
+
+    public async Task<string> DispatchAsync(Ticket ticket, ProjectOptions project, string projectName, CancellationToken cancellationToken = default)
+    {
+        var dryRun = _options.Webhooks.DryRun;
+        var resolved = ProjectCatalog.Resolve(_options, ticket, projectName);
+
+        ITicketSource ticketSource = CompositeTicketSource.WithJiraWriteback(
+            new InMemoryTicketSource(ticket),
+            resolved.JiraBaseUrl,
+            live: !dryRun);
+        ILlmProvider llm = LlmProviderFactory.Create(_options, project.Agent);
+        // Jira status AssignedToAgent is the human go-ahead; do not block the server on stdin.
+        var (sandbox, repoHost, gate) = LiveAdapterFactory.Create(_options, dryRun, autoApprove: true);
+
+        var pipeline = new FixBugPipeline(_options, ticketSource, llm, gate, sandbox, repoHost);
+        var runId = PipelineRunner.NewRunId(ticket.Key.ToLowerInvariant());
+        var artifacts = Path.GetFullPath(_options.Webhooks.ArtifactsDirectory);
+        Directory.CreateDirectory(artifacts);
+        if (!TicketRunLease.TryAcquire(artifacts, ticket.Key, out var skip))
+        {
+            Console.WriteLine($"[lease] Skip {ticket.Key}: {skip}");
+            return $"skipped:{ticket.Key}";
+        }
+
+        var context = new PipelineContext
+        {
+            RunId = runId,
+            PipelineName = pipeline.Name,
+            DryRun = dryRun,
+            ArtifactsDirectory = artifacts,
+            ProjectName = resolved.ProjectName,
+            RepoUrl = resolved.Repo.Url,
+            BaseBranch = string.IsNullOrWhiteSpace(resolved.Repo.DefaultBranch) ? "main" : resolved.Repo.DefaultBranch,
+            JiraBaseUrl = resolved.JiraBaseUrl,
+            TicketBrowseUrl = ProjectCatalog.BrowseUrl(resolved.JiraBaseUrl, ticket.Key),
+            Items =
+            {
+                ["ticketKey"] = "from-webhook",
+                ["projectName"] = resolved.ProjectName
+            }
+        };
+
+        await new PipelineRunner().RunAsync(pipeline, context, cancellationToken);
+        return runId;
+    }
+}

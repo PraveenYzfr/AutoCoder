@@ -1,0 +1,27 @@
+# Laptop / local. Binds 8081 on loopback only.
+# VM: use docker-compose.vm.yml (joins Claude's hub network, no public publish).
+
+name: autocoder
+
+services:
+  orchestrator:
+    image: autocoder/orchestrator:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:8081:8081"
+    env_file:
+      - .env
+    environment:
+      AUTOCODER_CONFIG: /app/config/autocoder.yml
+      AUTOCODER_WEBHOOKS_ENABLED: "true"
+      AUTOCODER_TRIGGERS_MODE: both
+      AUTOCODER_WEBHOOKS_DRY_RUN: "true"
+      AUTOCODER_SANDBOX: docker
+    volumes:
+      - ./config/autocoder.yml:/app/config/autocoder.yml:ro
+      - ./runs:/app/runs
+      - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

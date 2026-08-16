@@ -1,0 +1,155 @@
+# AutoCoder — enterprise target config (bank-style: Jira → agent → build → test → PR → Jira)
+#
+# THIS FILE IS THE CONTRACT FOR A 100% REAL RUN.
+# Secrets stay in .env / VM env. Never commit tokens.
+#
+# Runtime:
+#   AUTOCODER_CONFIG=config/enterprise.yml
+#
+# Live loop this config demands:
+#   AssignedToAgent → webhook → fetch ticket → plan → human approve
+#   → clone allowlisted repo → agent edits code → dotnet build → dotnet test
+#   → secret-scan → commit → push → open PR (NO MERGE)
+#   → Jira comment with PR URL + transition to In Review
+#
+# Ticket key is NEVER in this file. Jira webhook supplies it.
+
+triggers:
+  mode: webhook                 # production: webhook only (CLI is ops/debug)
+
+webhooks:
+  enabled: true
+  listen_port: 8081
+  path: /webhook/jira
+  require_secret: true          # production: HMAC/token required
+  secret_env: JIRA_WEBHOOK_SECRET
+  dry_run: false                # REAL clone / build / PR / Jira writeback
+  artifacts_directory: /var/lib/autocoder/runs
+
+github_auth:
+  mode: ${GITHUB_AUTH_MODE}     # pat (VM early) | github_app (enterprise)
+
+agents:
+  default:
+    type: routed
+    cheap:
+      type: deepseek
+      model: deepseek-v4-flash
+      endpoint: https://api.deepseek.com/v1
+    costly:
+      type: anthropic
+      model: claude-sonnet-5
+    role_tiers:
+      summarize: cheap
+      comment: cheap
+      scout: cheap
+      coding: cheap
+      planning: costly
+      thinking: costly
+      decision: costly
+      primary: costly
+  deepseek:
+    type: deepseek
+    model: deepseek-v4-flash
+    endpoint: https://api.deepseek.com/v1
+  groq:
+    type: groq
+    model: llama-3.1-8b-instant
+    endpoint: https://api.groq.com/openai/v1
+
+repos:
+  simpleapp:
+    type: github
+    url: https://github.com/PraveenYzfr/SimpleApp
+    default_branch: master
+    allowlist:
+      - github.com/PraveenYzfr/SimpleApp
+      - https://github.com/PraveenYzfr/SimpleApp
+
+trackers:
+  rgarchitects:
+    type: jira
+    url: https://rgarchitects.atlassian.net
+    auth: jira_token
+    email: ${JIRA_EMAIL}
+    open_states: ["To Do", "AssignedToAgent", "In Progress"]
+    done_status: "In Review"
+    failed_status: "AssignedToAgent"
+    needs_clarification_status: "Blocked"
+
+projects:
+  simpleapp:
+    agent: default
+    tracker: rgarchitects
+    repos: [simpleapp]
+    pipeline: fix-bug
+    human_approval: required
+    auto_merge: false
+    jira_trigger:
+      project_resolution:
+        strategy: status_only          # one project: status is the gate
+      trigger_statuses: ["AssignedToAgent"]
+      comment_keyword: "@autocoder"
+      secret: ${JIRA_WEBHOOK_SECRET}
+
+pipelines:
+  fix-bug:
+    require_code_change: true          # refuse success if agent did not edit product code
+    require_build: true
+    require_tests: true
+    open_draft_pr_on_red_tests: true
+    never_merge: true
+    steps:
+      - FetchTicket
+      - ResolveProject
+      - GeneratePlan
+      - ApprovalGate
+      - ProvisionSandbox               # clone allowlisted repo, branch autocoder/{KEY}
+      - AgenticImplement               # LLM + tools: read/edit files (NOT ticket-as-shell)
+      - Build                          # e.g. dotnet build — fail run if compile fails
+      - Test                           # e.g. dotnet test
+      - SecretScan                     # refuse commit if secrets in diff
+      - CommitAndOpenPr                # push + PR, no merge
+      - WritebackTicket                # Jira comment + In Review
+      - PersistRunResult
+
+sandbox:
+  type: docker
+  default_image: mcr.microsoft.com/dotnet/sdk:8.0
+  command_allowlist:
+    - git
+    - dotnet
+    - npm
+    - python
+    - pytest
+  max_runtime_minutes: 30
+  memory: 2g
+
+poll:
+  enabled: true
+  interval_seconds: 300
+  jql: 'status = "AssignedToAgent"'
+
+limits:
+  max_usd_per_run: 5
+  max_tokens_per_run: 500000
+  max_tool_calls: 40
+  one_live_run_per_ticket: true
+
+writeback:
+  comment: true
+  include_pr_url: true
+  include_plan_summary: true
+  transition_on_success: "In Review"
+  comment_on_failure: true
+
+secrets:
+  gemini_api_key: ${GEMINI_API_KEY}
+  deepseek_api_key: ${DEEPSEEK_API_KEY}
+  groq_api_key: ${GROQ_API_KEY}
+  openai_api_key: ${OPENAI_API_KEY}
+  anthropic_api_key: ${ANTHROPIC_API_KEY}
+  jira_token: ${JIRA_TOKEN}
+  jira_email: ${JIRA_EMAIL}
+  jira_webhook_secret: ${JIRA_WEBHOOK_SECRET}
+  github_token: ${GITHUB_TOKEN}

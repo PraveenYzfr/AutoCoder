@@ -1,0 +1,7 @@
+bin/
+obj/
+runs/
+.env
+.git/
+**/.vs/
+**/TestResults/

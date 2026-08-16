@@ -1,0 +1,17 @@
+{
+  "key": "AC-101",
+  "summary": "Login returns 500 when password contains a plus sign",
+  "description": "Users with '+' in their password get HTTP 500 on POST /api/auth/login. Expected: 401 for wrong password or 200 for valid credentials. Reproduce by URL-encoding the form body incorrectly in AuthController.",
+  "status": "AssignedToAgent",
+  "labels": ["bug", "autocoder"],
+  "assignee": null,
+  "projectKey": "AC",
+  "issueType": "Bug",
+  "priority": "High",
+  "comments": [
+    {
+      "author": "qa@example.com",
+      "body": "Reproduced on staging. Stack trace points to AuthController.ValidatePassword."
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+# AutoCoder on the shared Azure VM — Claude wires this into the hub network.
+# Does NOT start SQL/Redis/Qdrant. Joins the external network Claude publishes.
+#
+#   docker compose -f docker-compose.vm.yml up -d --build
+#
+# Cloudflare: autocoder.praveenyzfr.com → this service :8081 (loopback/compose only).
+
+name: autocoder
+
+networks:
+  hub:
+    external: true
+    name: ${HUB_NETWORK:-hub}
+
+services:
+  autocoder:
+    image: autocoder/orchestrator:vm
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: "no"
+    mem_limit: 1g
+    env_file:
+      - .env
+    environment:
+      AUTOCODER_CONFIG: /app/config/enterprise.yml
+      AUTOCODER_WEBHOOKS_ENABLED: "true"
+      AUTOCODER_TRIGGERS_MODE: both
+      AUTOCODER_WEBHOOKS_DRY_RUN: "false"
+      AUTOCODER_JIRA_POLL: "true"
+      AUTOCODER_SANDBOX: docker
+      AUTOCODER_REQUIRE_DOCKER: "true"
+      AUTOCODER_HOST_WORKSPACE_ROOT: /var/lib/autocoder/runs
+      AUTOCODER_CONTAINER_WORKSPACE_ROOT: /app/runs
+      # Claude: set DOCKER_HOST to the socket proxy, e.g. tcp://docker-socket-proxy:2375
+      # AUTOCODER_SANDBOX_NETWORK must stay bridge (or nuget-only). Do not use none.
+    volumes:
+      - ./config/enterprise.yml:/app/config/enterprise.yml:ro
+      - /var/lib/autocoder/runs:/app/runs
+      - /var/run/docker.sock:/var/run/docker.sock
+    expose:
+      - "8081"
+    networks:
+      - hub
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

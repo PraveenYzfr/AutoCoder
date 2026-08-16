@@ -1,0 +1,25 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+TestResults/
+
+## AutoCoder runtime
+runs/
+.env
+/autocoder.yml
+*.db
+
+## IDE / OS
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+Desktop.ini
+
+## Python (future workers)
+.venv/
+__pycache__/
+*.pyc

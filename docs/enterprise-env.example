@@ -1,0 +1,29 @@
+# Enterprise / Azure VM env — copy to .env on the VM. Never commit.
+
+AUTOCODER_CONFIG=config/enterprise.yml
+AUTOCODER_TRIGGERS_MODE=webhook
+AUTOCODER_WEBHOOKS_ENABLED=true
+AUTOCODER_WEBHOOKS_DRY_RUN=false
+AUTOCODER_WEBHOOKS_PORT=8081
+AUTOCODER_AUTO_APPROVE=false
+
+# Public site
+# Jira webhook URL: https://autocoder.praveenyzfr.com/webhook/jira
+# JQL: status = "AssignedToAgent"
+# Exclude body: UNCHECKED
+
+JIRA_BASE_URL=https://rgarchitects.atlassian.net
+JIRA_EMAIL=praveenyadav.ece@gmail.com
+JIRA_TOKEN=
+JIRA_WEBHOOK_SECRET=
+
+GITHUB_REPO_URL=https://github.com/PraveenYzfr/SimpleApp
+GITHUB_AUTH_MODE=pat
+GITHUB_TOKEN=
+# Later:
+# GITHUB_AUTH_MODE=github_app
+# GITHUB_APP_ID=
+# GITHUB_APP_INSTALLATION_ID=
+# GITHUB_APP_PRIVATE_KEY_PATH=/etc/autocoder/github-app.pem
+
+GEMINI_API_KEY=
