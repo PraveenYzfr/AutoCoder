@@ -68,8 +68,10 @@ trackers:
     # Prefer env JIRA_BASE_URL (public site root, no /browse/...).
     url: ${JIRA_BASE_URL}
     auth: jira_token
-    open_states: ["To Do", "AssignedToAgent", "In Progress"]
+    open_states: ["To Do", "AssignedToAgent", "In Progress", "AgentWorking"]
     done_status: "In Review"
+    failed_status: "Agent Failure"
+    running_status: "AgentWorking"
 
 projects:
   primary:

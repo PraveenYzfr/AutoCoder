@@ -7,10 +7,10 @@
 #   AUTOCODER_CONFIG=config/enterprise.yml
 #
 # Live loop this config demands:
-#   AssignedToAgent → webhook → fetch ticket → plan → human approve
-#   → clone allowlisted repo → agent edits code → dotnet build → dotnet test
-#   → secret-scan → commit → push → open PR (NO MERGE)
-#   → Jira comment with PR URL + transition to In Review
+#   AssignedToAgent → webhook → extract ticket → clone SimpleApp
+#   → cheap scout → costly Claude plan → approve → cheap implement
+#   → dotnet build / test → secret-scan → PR (NO MERGE)
+#   → Jira comment + In Review (or Agent Failure)
 #
 # Ticket key is NEVER in this file. Jira webhook supplies it.
 
@@ -72,9 +72,10 @@ trackers:
     url: https://rgarchitects.atlassian.net
     auth: jira_token
     email: ${JIRA_EMAIL}
-    open_states: ["To Do", "AssignedToAgent", "In Progress"]
+    open_states: ["To Do", "AssignedToAgent", "In Progress", "AgentWorking"]
     done_status: "In Review"
-    failed_status: "AssignedToAgent"
+    failed_status: "Agent Failure"
+    running_status: "AgentWorking"
     needs_clarification_status: "Blocked"
 
 projects:
@@ -102,15 +103,17 @@ pipelines:
     steps:
       - FetchTicket
       - ResolveProject
-      - GeneratePlan
+      - ExtractTicket                  # normalize Jira fields (no LLM)
+      - ProvisionSandbox               # clone allowlisted repo FIRST
+      - ScoutRepo                      # cheap model: stack + layout + likely files
+      - GeneratePlan                   # costly Claude: plan using scout, not ticket-only
       - ApprovalGate
-      - ProvisionSandbox               # clone allowlisted repo, branch autocoder/{KEY}
-      - AgenticImplement               # LLM + tools: read/edit files (NOT ticket-as-shell)
+      - AgenticImplement               # cheap model implements the plan
       - Build                          # e.g. dotnet build — fail run if compile fails
       - Test                           # e.g. dotnet test
       - SecretScan                     # refuse commit if secrets in diff
       - CommitAndOpenPr                # push + PR, no merge
-      - WritebackTicket                # Jira comment + In Review
+      - WritebackTicket                # Jira comment + In Review / Agent Failure
       - PersistRunResult
 
 sandbox:

@@ -38,6 +38,29 @@ internal sealed class WorkspaceTools
         return entries.Count == 0 ? "(empty)" : string.Join('\n', entries);
     }
 
+    public string ListTree(int max = 250)
+    {
+        if (!Directory.Exists(_work))
+            return "(no workspace)";
+
+        var entries = new List<string>();
+        foreach (var item in Directory.EnumerateFileSystemEntries(_work, "*", SearchOption.AllDirectories).OrderBy(x => x))
+        {
+            var rel = WorkspacePaths.Relativize(_work, item);
+            if (WorkspacePaths.IsIgnored(rel))
+                continue;
+            var suffix = Directory.Exists(item) ? "/" : "";
+            entries.Add(rel + suffix);
+            if (entries.Count >= max)
+            {
+                entries.Add("… truncated …");
+                break;
+            }
+        }
+
+        return entries.Count == 0 ? "(empty)" : string.Join('\n', entries);
+    }
+
     public string ReadFile(string path, int maxChars = 80_000)
     {
         var full = WorkspacePaths.Resolve(_work, path);

@@ -106,7 +106,9 @@ public sealed class CodingAgentLoop
         var system = $"""
             You are AutoCoder, an enterprise coding agent.
             Task type: {intent}.
-            You MUST change application source code to implement the ticket. Do not only write markdown.
+            You MUST implement the approved plan by editing application source. Do not only write markdown.
+            Follow the plan's file paths. Re-read files before writing. Do not invent a different approach
+            unless a planned path does not exist.
             Workspace is a git checkout. Paths are relative to the repo root.
             Never run shell. Never write under .git.
             Use list_files, grep, read_file to understand the repo, then write_file with complete file contents.
@@ -121,13 +123,16 @@ public sealed class CodingAgentLoop
             Description:
             {ticket.Description}
 
+            Repo scout:
+            {context.RepoScout}
+
             Approved plan:
             {context.Plan?.RawMarkdown}
 
             Workspace top-level:
             {listing}
 
-            Implement this now. Inspect the repo, edit product source, add tests if a test project exists, then finish.
+            Implement the approved plan now. Inspect the repo, edit product source, add tests if a test project exists, then finish.
             """;
         return (system, user, intent);
     }

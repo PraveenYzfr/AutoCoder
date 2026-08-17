@@ -84,6 +84,8 @@ public sealed class TrackerOptions
     public List<string> OpenStates { get; set; } = [];
     public string? DoneStatus { get; set; }
     public string? FailedStatus { get; set; }
+    /// <summary>Set as soon as a run is accepted so Jira webhook can return and poll will not re-pick AssignedToAgent.</summary>
+    public string? RunningStatus { get; set; }
     public string? NeedsClarificationStatus { get; set; }
 }
 

@@ -42,7 +42,12 @@ public sealed class ResolveProjectStep(AutoCoderOptions options) : IPipelineStep
         context.JiraBaseUrl = resolved.JiraBaseUrl;
         context.TicketBrowseUrl = ProjectCatalog.BrowseUrl(resolved.JiraBaseUrl, ticket.Key);
         context.DoneStatus = resolved.Tracker.DoneStatus ?? "In Review";
-        context.FailedStatus = resolved.Tracker.FailedStatus;
+        context.FailedStatus = string.IsNullOrWhiteSpace(resolved.Tracker.FailedStatus)
+            ? "Agent Failure"
+            : resolved.Tracker.FailedStatus;
+        context.RunningStatus = string.IsNullOrWhiteSpace(resolved.Tracker.RunningStatus)
+            ? "AgentWorking"
+            : resolved.Tracker.RunningStatus;
 
         Console.WriteLine(
             $"[{Name}] Project={context.ProjectName} repo={context.RepoUrl} jira={context.JiraBaseUrl} "
@@ -59,15 +64,11 @@ public sealed class GeneratePlanStep(ILlmProvider llm) : IPipelineStep
     {
         var ticket = context.Ticket ?? throw new InvalidOperationException("Ticket required.");
         var prompt = $"""
-            Ticket: {ticket.Key}
-            Summary: {ticket.Summary}
-            Type: {ticket.IssueType}
-            Priority: {ticket.Priority}
-            Description:
-            {ticket.Description}
+            Ticket brief:
+            {context.TicketBrief ?? $"{ticket.Key}: {ticket.Summary}\n{ticket.Description}"}
 
-            Comments:
-            {string.Join("\n", ticket.Comments.Select(c => $"- {c.Author}: {c.Body}"))}
+            Cheap-model repo scout (from the cloned allow-listed repo — treat paths as ground truth):
+            {context.RepoScout ?? "(no scout)"}
             """;
 
         var response = await llm.CompleteAsync(new LlmRequest
@@ -76,7 +77,16 @@ public sealed class GeneratePlanStep(ILlmProvider llm) : IPipelineStep
             MaxTokens = 4096,
             Messages =
             [
-                new LlmMessage { Role = "system", Content = "You are AutoCoder's planner. Produce a concise implementation plan." },
+                new LlmMessage
+                {
+                    Role = "system",
+                    Content = """
+                        You are AutoCoder's planner. The repo has already been cloned and scouted.
+                        Produce a concise implementation plan using ONLY real paths from the scout.
+                        Name the tech stack, files to edit, tests to add/update, and risks.
+                        Do not invent files or frameworks that the scout did not mention.
+                        """
+                },
                 new LlmMessage { Role = "user", Content = prompt }
             ]
         }, cancellationToken);
@@ -480,15 +490,18 @@ public sealed class PersistRunResultStep : IPipelineStep
 
         var planMd = context.Plan?.RawMarkdown ?? "(no plan)";
         await File.WriteAllTextAsync(Path.Combine(dir, "plan.md"), planMd, cancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(dir, "ticket-brief.md"), context.TicketBrief ?? "(none)", cancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(dir, "scout.md"), context.RepoScout ?? "(none)", cancellationToken);
 
         var decisions = $"""
             # Decisions
 
-            - Pipeline: plan → agent edit → build → test → PR (no merge) → Jira writeback.
+            - Pipeline: extract ticket → clone → cheap scout → costly plan → cheap implement → build → test → PR (no merge) → Jira writeback.
             - Dry run: {context.DryRun}
             - Product files changed: {context.ProductFilesChanged}
             - Build: {context.BuildSucceeded}  Tests: {context.TestsSucceeded}
             - Done status: {context.DoneStatus ?? "In Review"}
+            - Failed status: {context.FailedStatus ?? "Agent Failure"}
             - No auto-merge.
             """;
         await File.WriteAllTextAsync(Path.Combine(dir, "decisions.md"), decisions, cancellationToken);

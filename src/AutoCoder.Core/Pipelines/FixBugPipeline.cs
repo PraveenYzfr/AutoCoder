@@ -21,9 +21,11 @@ public sealed class FixBugPipeline : IPipeline
         [
             new FetchTicketStep(ticketSource),
             new ResolveProjectStep(options),
+            new ExtractTicketStep(),
+            new ProvisionSandboxStep(sandbox, repoHost),
+            new ScoutRepoStep(llm),
             new GeneratePlanStep(llm),
             new ApprovalGateStep(approvalGate),
-            new ProvisionSandboxStep(sandbox, repoHost),
             new AgenticImplementStep(options),
             new BuildStep(sandbox),
             new TestStep(sandbox),

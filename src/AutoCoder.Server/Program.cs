@@ -93,29 +93,27 @@ async Task<IResult> HandleJiraWebhook(HttpRequest request, AutoCoderOptions opts
         });
     }
 
-    try
+    if (!dispatcher.TryEnqueue(parsed.Ticket, decision.Project, decision.ProjectName, out var runId, out var skip))
     {
-        var runId = await dispatcher.DispatchAsync(parsed.Ticket, decision.Project, decision.ProjectName, ct);
         return Results.Json(new
         {
             accepted = true,
-            skipped = false,
+            skipped = true,
             ticket = parsed.Ticket.Key,
-            project = decision.ProjectName,
-            runId,
-            dryRun = opts.Webhooks.DryRun
+            reason = skip ?? "lease held"
         });
     }
-    catch (Exception ex)
+
+    return Results.Json(new
     {
-        return Results.Json(new
-        {
-            accepted = true,
-            skipped = false,
-            ticket = parsed.Ticket.Key,
-            error = ex.Message
-        }, statusCode: StatusCodes.Status500InternalServerError);
-    }
+        accepted = true,
+        queued = true,
+        ticket = parsed.Ticket.Key,
+        project = decision.ProjectName,
+        runId,
+        dryRun = opts.Webhooks.DryRun,
+        note = "Pipeline runs in the background. Jira moves to AgentWorking now, then In Review or Agent Failure when finished."
+    }, statusCode: StatusCodes.Status202Accepted);
 }
 
 app.MapPost(webhookPath, HandleJiraWebhook);

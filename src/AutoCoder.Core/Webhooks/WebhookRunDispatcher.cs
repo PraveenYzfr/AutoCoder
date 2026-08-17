@@ -90,29 +90,67 @@ public sealed class WebhookRunDispatcher
 
     public WebhookRunDispatcher(AutoCoderOptions options) => _options = options;
 
-    public async Task<string> DispatchAsync(Ticket ticket, ProjectOptions project, string projectName, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Lease + Jira "running" ack, then pipeline on a background task.
+    /// HTTP can return 202 without waiting for the PR.
+    /// </summary>
+    public bool TryEnqueue(Ticket ticket, ProjectOptions project, string projectName, out string runId, out string? skipReason)
+    {
+        runId = "";
+        skipReason = null;
+        var artifacts = ArtifactsDir();
+        if (!TicketRunLease.TryAcquire(artifacts, ticket.Key, out skipReason))
+            return false;
+
+        runId = PipelineRunner.NewRunId(ticket.Key.ToLowerInvariant());
+        var capturedRunId = runId;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await RunAcceptedAsync(ticket, project, projectName, capturedRunId, acquireLease: false, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[webhook] background run {ticket.Key} failed: {ex.Message}");
+            }
+        });
+        return true;
+    }
+
+    public Task<string> DispatchAsync(Ticket ticket, ProjectOptions project, string projectName, CancellationToken cancellationToken = default) =>
+        RunAcceptedAsync(ticket, project, projectName, runId: null, acquireLease: true, cancellationToken);
+
+    private async Task<string> RunAcceptedAsync(
+        Ticket ticket,
+        ProjectOptions project,
+        string projectName,
+        string? runId,
+        bool acquireLease,
+        CancellationToken cancellationToken)
     {
         var dryRun = _options.Webhooks.DryRun;
         var resolved = ProjectCatalog.Resolve(_options, ticket, projectName);
+        var artifacts = ArtifactsDir();
+        Directory.CreateDirectory(artifacts);
+
+        if (acquireLease && !TicketRunLease.TryAcquire(artifacts, ticket.Key, out var skip))
+        {
+            Console.WriteLine($"[lease] Skip {ticket.Key}: {skip}");
+            return $"skipped:{ticket.Key}";
+        }
+
+        runId ??= PipelineRunner.NewRunId(ticket.Key.ToLowerInvariant());
+        await AcknowledgeRunningAsync(ticket, resolved, dryRun, cancellationToken);
 
         ITicketSource ticketSource = CompositeTicketSource.WithJiraWriteback(
             new InMemoryTicketSource(ticket),
             resolved.JiraBaseUrl,
             live: !dryRun);
         ILlmProvider llm = LlmProviderFactory.Create(_options, project.Agent);
-        // Jira status AssignedToAgent is the human go-ahead; do not block the server on stdin.
         var (sandbox, repoHost, gate) = LiveAdapterFactory.Create(_options, dryRun, autoApprove: true);
 
         var pipeline = new FixBugPipeline(_options, ticketSource, llm, gate, sandbox, repoHost);
-        var runId = PipelineRunner.NewRunId(ticket.Key.ToLowerInvariant());
-        var artifacts = Path.GetFullPath(_options.Webhooks.ArtifactsDirectory);
-        Directory.CreateDirectory(artifacts);
-        if (!TicketRunLease.TryAcquire(artifacts, ticket.Key, out var skip))
-        {
-            Console.WriteLine($"[lease] Skip {ticket.Key}: {skip}");
-            return $"skipped:{ticket.Key}";
-        }
-
         var context = new PipelineContext
         {
             RunId = runId,
@@ -134,4 +172,42 @@ public sealed class WebhookRunDispatcher
         await new PipelineRunner().RunAsync(pipeline, context, cancellationToken);
         return runId;
     }
+
+    private async Task AcknowledgeRunningAsync(
+        Ticket ticket,
+        ResolvedProject resolved,
+        bool dryRun,
+        CancellationToken cancellationToken)
+    {
+        var running = string.IsNullOrWhiteSpace(resolved.Tracker.RunningStatus)
+            ? "AgentWorking"
+            : resolved.Tracker.RunningStatus;
+        var comment = "AutoCoder accepted this ticket and is working on it. Jira will move to In Review (PR opened) or Agent Failure when the run finishes.";
+        if (dryRun)
+        {
+            Console.WriteLine($"[jira] Dry-run ack {ticket.Key} → {running}");
+            return;
+        }
+
+        try
+        {
+            var source = CompositeTicketSource.WithJiraWriteback(
+                new InMemoryTicketSource(ticket),
+                resolved.JiraBaseUrl,
+                live: true);
+            await source.WritebackAsync(new TicketWriteback
+            {
+                TicketKey = ticket.Key,
+                NewStatus = running,
+                Comment = comment
+            }, cancellationToken);
+            Console.WriteLine($"[jira] Accepted {ticket.Key} → {running}");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[jira] Running ack failed for {ticket.Key}: {ex.Message}");
+        }
+    }
+
+    private string ArtifactsDir() => Path.GetFullPath(_options.Webhooks.ArtifactsDirectory);
 }

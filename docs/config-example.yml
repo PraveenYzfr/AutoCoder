@@ -61,7 +61,8 @@ trackers:
     auth: jira_token
     open_states: ["To Do", "AssignedToAgent", "In Progress"]
     done_status: "In Review"
-    failed_status: "In Progress"
+    failed_status: "Agent Failure"
+    running_status: "AgentWorking"
     needs_clarification_status: "Blocked"
 
 projects:

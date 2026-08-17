@@ -43,6 +43,10 @@ public sealed class PipelineContext
     public string? WorkDirectory { get; set; }
     public string? BranchName { get; set; }
     public ImplementationPlan? Plan { get; set; }
+    /// <summary>Normalized ticket text for planners (no LLM).</summary>
+    public string? TicketBrief { get; set; }
+    /// <summary>Cheap-model repo briefing given to Claude for planning.</summary>
+    public string? RepoScout { get; set; }
     public ApprovalResult? Approval { get; set; }
     public PullRequestResult? PullRequest { get; set; }
     public string? FailureReason { get; set; }
@@ -50,6 +54,7 @@ public sealed class PipelineContext
     public string ArtifactsDirectory { get; set; } = "runs";
     public string? DoneStatus { get; set; }
     public string? FailedStatus { get; set; }
+    public string? RunningStatus { get; set; }
     public int ProductFilesChanged { get; set; }
     public bool BuildSucceeded { get; set; }
     public bool TestsSucceeded { get; set; }
