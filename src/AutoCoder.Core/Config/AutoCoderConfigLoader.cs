@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using AutoCoder.Abstractions.Config;
+using AutoCoder.Core.Resilience;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 
@@ -30,6 +31,7 @@ public static class AutoCoderConfigLoader
 
         ApplyEnvOverlays(options);
         ProjectCatalog.ApplyRuntimeOverlays(options);
+        TransientRetry.Configure(options.Resilience);
         return options;
     }
 
@@ -105,6 +107,18 @@ public static class AutoCoderConfigLoader
         var sandbox = Environment.GetEnvironmentVariable("AUTOCODER_SANDBOX");
         if (!string.IsNullOrWhiteSpace(sandbox))
             options.Sandbox.Type = sandbox.Trim();
+
+        var concurrent = Environment.GetEnvironmentVariable("AUTOCODER_MAX_CONCURRENT_RUNS");
+        if (int.TryParse(concurrent, out var maxConcurrent))
+            options.Limits.MaxConcurrentRuns = maxConcurrent;
+
+        var retryAttempts = Environment.GetEnvironmentVariable("AUTOCODER_RETRY_MAX_ATTEMPTS");
+        if (int.TryParse(retryAttempts, out var maxAttempts))
+            options.Resilience.MaxAttempts = maxAttempts;
+
+        var retryDelay = Environment.GetEnvironmentVariable("AUTOCODER_RETRY_BASE_DELAY_MS");
+        if (int.TryParse(retryDelay, out var baseDelayMs))
+            options.Resilience.BaseDelayMs = baseDelayMs;
 
         ApplyLlmOverlays(options);
     }

@@ -11,6 +11,9 @@ public sealed class AutoCoderOptions
     public Dictionary<string, ProjectOptions> Projects { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public SandboxOptions Sandbox { get; set; } = new();
     public PollOptions Poll { get; set; } = new();
+    public LimitsOptions Limits { get; set; } = new();
+    public ResilienceOptions Resilience { get; set; } = new();
+    public Dictionary<string, PipelineOptions> Pipelines { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> Secrets { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
@@ -130,4 +133,30 @@ public sealed class PollOptions
     public bool Enabled { get; set; }
     public int IntervalSeconds { get; set; } = 300;
     public string Jql { get; set; } = "status = \"AssignedToAgent\"";
+}
+
+/// <summary>Per-run and process caps. 0 on a numeric cap means unlimited.</summary>
+public sealed class LimitsOptions
+{
+    public decimal MaxUsdPerRun { get; set; } = 5;
+    public int MaxTokensPerRun { get; set; } = 500_000;
+    public int MaxToolCalls { get; set; } = 40;
+    public int MaxConcurrentRuns { get; set; } = 2;
+    public bool OneLiveRunPerTicket { get; set; } = true;
+}
+
+/// <summary>Retries for LLM/Jira/GitHub/Docker blips. 4xx (except 408/429) is not retried.</summary>
+public sealed class ResilienceOptions
+{
+    public int MaxAttempts { get; set; } = 3;
+    public int BaseDelayMs { get; set; } = 250;
+}
+
+public sealed class PipelineOptions
+{
+    public bool RequireCodeChange { get; set; } = true;
+    public bool RequireBuild { get; set; } = true;
+    public bool RequireTests { get; set; } = true;
+    public bool OpenDraftPrOnRedTests { get; set; }
+    public bool NeverMerge { get; set; } = true;
 }

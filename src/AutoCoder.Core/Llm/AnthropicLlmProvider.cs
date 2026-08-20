@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AutoCoder.Abstractions;
+using AutoCoder.Core.Resilience;
 
 namespace AutoCoder.Core.Llm;
 
@@ -68,8 +69,10 @@ public sealed class AnthropicLlmProvider : ILlmProvider, IDisposable
         if (!string.IsNullOrWhiteSpace(system))
             payload["system"] = system;
 
-        using var response = await _http.PostAsJsonAsync(
-            "https://api.anthropic.com/v1/messages", payload, Json, cancellationToken);
+        using var response = await TransientRetry.SendAsync(
+            "llm.anthropic",
+            ct => _http.PostAsJsonAsync("https://api.anthropic.com/v1/messages", payload, Json, ct),
+            cancellationToken);
         var raw = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException($"Anthropic error {(int)response.StatusCode}: {Truncate(raw, 800)}");
@@ -96,13 +99,7 @@ public sealed class AnthropicLlmProvider : ILlmProvider, IDisposable
             completion = usage.TryGetProperty("output_tokens", out var o) ? o.GetInt32() : 0;
         }
 
-        return new LlmResponse
-        {
-            Content = text.Trim(),
-            PromptTokens = prompt,
-            CompletionTokens = completion,
-            EstimatedUsdCost = 0m
-        };
+        return LlmUsage.Complete("anthropic", model, text.Trim(), prompt, completion);
     }
 
     private string ResolveModel(string modelRole)

@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AutoCoder.Core.Llm;
+using AutoCoder.Core.Resilience;
 
 namespace AutoCoder.Core.Agent;
 
@@ -18,12 +19,14 @@ internal sealed class OpenAiToolClient
     private readonly HttpClient _http;
     private readonly string _model;
     private readonly string _baseUrl;
+    private readonly string _providerName;
 
-    public OpenAiToolClient(HttpClient http, string apiKey, string model, string baseUrl)
+    public OpenAiToolClient(HttpClient http, string apiKey, string model, string baseUrl, string? providerName = null)
     {
         _http = http;
         _model = model;
         _baseUrl = baseUrl.TrimEnd('/');
+        _providerName = string.IsNullOrWhiteSpace(providerName) ? "openai" : providerName;
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
         _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
     }
@@ -59,10 +62,15 @@ internal sealed class OpenAiToolClient
         }
 
         var url = $"{_baseUrl}/chat/completions";
-        using var response = await _http.PostAsJsonAsync(url, payload, Json, cancellationToken);
+        using var response = await TransientRetry.SendAsync(
+            $"agent.{_providerName}",
+            ct => _http.PostAsJsonAsync(url, payload, Json, ct),
+            cancellationToken);
         var raw = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException($"DeepSeek/OpenAI agent error {(int)response.StatusCode}: {raw[..Math.Min(800, raw.Length)]}");
+
+        LlmUsage.AddOpenAiUsage(_providerName, model, raw);
 
         using var doc = JsonDocument.Parse(raw);
         var parts = new List<GeminiPart>();

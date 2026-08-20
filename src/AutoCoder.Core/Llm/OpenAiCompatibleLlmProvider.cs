@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AutoCoder.Abstractions;
+using AutoCoder.Core.Resilience;
 
 namespace AutoCoder.Core.Llm;
 
@@ -78,7 +79,10 @@ public sealed class OpenAiCompatibleLlmProvider : ILlmProvider, IDisposable
         }
 
         var url = $"{_baseUrl}/chat/completions";
-        using var response = await _http.PostAsJsonAsync(url, payload, Json, cancellationToken);
+        using var response = await TransientRetry.SendAsync(
+            $"llm.{_providerName}",
+            ct => _http.PostAsJsonAsync(url, payload, Json, ct),
+            cancellationToken);
         var raw = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
@@ -110,13 +114,7 @@ public sealed class OpenAiCompatibleLlmProvider : ILlmProvider, IDisposable
             completion = usage.TryGetProperty("completion_tokens", out var t) ? t.GetInt32() : 0;
         }
 
-        return new LlmResponse
-        {
-            Content = text.Trim(),
-            PromptTokens = prompt,
-            CompletionTokens = completion,
-            EstimatedUsdCost = 0m
-        };
+        return LlmUsage.Complete(_providerName, model, text.Trim(), prompt, completion);
     }
 
     private string ResolveModel(string modelRole)

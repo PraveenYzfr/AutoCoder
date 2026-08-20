@@ -2,6 +2,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AutoCoder.Abstractions;
+using AutoCoder.Core.Resilience;
 
 namespace AutoCoder.Core.Llm;
 
@@ -79,7 +80,10 @@ public sealed class GeminiLlmProvider : ILlmProvider, IDisposable
             }
         };
 
-        using var response = await _http.PostAsJsonAsync(url, payload, JsonOptions, cancellationToken);
+        using var response = await TransientRetry.SendAsync(
+            "llm.gemini",
+            ct => _http.PostAsJsonAsync(url, payload, JsonOptions, ct),
+            cancellationToken);
         var raw = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
@@ -99,13 +103,7 @@ public sealed class GeminiLlmProvider : ILlmProvider, IDisposable
         var promptTokens = parsed.UsageMetadata?.PromptTokenCount ?? EstimateTokens(systemText + string.Join("", request.Messages.Select(m => m.Content)));
         var completionTokens = parsed.UsageMetadata?.CandidatesTokenCount ?? EstimateTokens(text);
 
-        return new LlmResponse
-        {
-            Content = text.Trim(),
-            PromptTokens = promptTokens,
-            CompletionTokens = completionTokens,
-            EstimatedUsdCost = 0m // pricing varies; wire tables later
-        };
+        return LlmUsage.Complete("gemini", model, text.Trim(), promptTokens, completionTokens);
     }
 
     private string ResolveModel(string modelRole)

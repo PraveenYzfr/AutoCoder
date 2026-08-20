@@ -101,6 +101,17 @@ poll:
   interval_seconds: 300
   jql: 'status = "AssignedToAgent"'
 
+limits:
+  max_usd_per_run: 5
+  max_tokens_per_run: 500000
+  max_tool_calls: 40
+  max_concurrent_runs: 2
+  one_live_run_per_ticket: true
+
+resilience:
+  max_attempts: 3
+  base_delay_ms: 250
+
 secrets:
   gemini_api_key: ${GEMINI_API_KEY}
   deepseek_api_key: ${DEEPSEEK_API_KEY}

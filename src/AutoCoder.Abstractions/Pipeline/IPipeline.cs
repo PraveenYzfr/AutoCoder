@@ -60,7 +60,18 @@ public sealed class PipelineContext
     public bool TestsSucceeded { get; set; }
     public string? AgentSummary { get; set; }
     public List<string> ChangedRelativePaths { get; } = [];
+    public RunSpend Spend { get; } = new();
     public Dictionary<string, object?> Items { get; } = new(StringComparer.OrdinalIgnoreCase);
+}
+
+/// <summary>Accumulated LLM/tool usage for one pipeline run.</summary>
+public sealed class RunSpend
+{
+    public int PromptTokens { get; set; }
+    public int CompletionTokens { get; set; }
+    public int TotalTokens => PromptTokens + CompletionTokens;
+    public int ToolCalls { get; set; }
+    public decimal EstimatedUsd { get; set; }
 }
 
 public interface IPipelineStep

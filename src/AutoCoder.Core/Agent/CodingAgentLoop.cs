@@ -2,6 +2,7 @@ using System.Text.Json;
 using AutoCoder.Abstractions;
 using AutoCoder.Abstractions.Config;
 using AutoCoder.Core.Llm;
+using AutoCoder.Core.Runs;
 
 namespace AutoCoder.Core.Agent;
 
@@ -63,7 +64,7 @@ public sealed class CodingAgentLoop
         }
     }
 
-    private static async Task RunGeminiAsync(
+    private async Task RunGeminiAsync(
         PipelineContext context, string work, Ticket ticket, CancellationToken cancellationToken, string model)
     {
         var key = Environment.GetEnvironmentVariable("GEMINI_API_KEY")
@@ -79,10 +80,10 @@ public sealed class CodingAgentLoop
         var tools = new WorkspaceTools(work);
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(3) };
         var client = new GeminiToolClient(http, key, model);
-        await RunGeminiTurnsAsync(context, ticket, tools, client, cancellationToken);
+        await RunGeminiTurnsAsync(context, ticket, tools, client, TurnCap(), cancellationToken);
     }
 
-    private static async Task RunOpenAiCompatibleAsync(
+    private async Task RunOpenAiCompatibleAsync(
         PipelineContext context,
         string work,
         Ticket ticket,
@@ -96,8 +97,8 @@ public sealed class CodingAgentLoop
                   ?? throw new InvalidOperationException($"{apiKeyEnv} is required for the {providerName} coding agent.");
         var tools = new WorkspaceTools(work);
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(3) };
-        var client = new OpenAiToolClient(http, key, model, baseUrl);
-        await RunOpenAiTurnsAsync(context, ticket, tools, client, model, providerName, cancellationToken);
+        var client = new OpenAiToolClient(http, key, model, baseUrl, providerName);
+        await RunOpenAiTurnsAsync(context, ticket, tools, client, model, providerName, TurnCap(), cancellationToken);
     }
 
     private static (string System, string User, string Intent) Prompt(PipelineContext context, Ticket ticket, WorkspaceTools tools)
@@ -137,8 +138,14 @@ public sealed class CodingAgentLoop
         return (system, user, intent);
     }
 
+    private int TurnCap()
+    {
+        var maxTools = _options?.Limits.MaxToolCalls ?? 0;
+        return maxTools > 0 ? Math.Max(8, maxTools) : MaxTurns;
+    }
+
     private static async Task RunGeminiTurnsAsync(
-        PipelineContext context, Ticket ticket, WorkspaceTools tools, GeminiToolClient client, CancellationToken cancellationToken)
+        PipelineContext context, Ticket ticket, WorkspaceTools tools, GeminiToolClient client, int maxTurns, CancellationToken cancellationToken)
     {
         var (system, user, intent) = Prompt(context, ticket, tools);
         var contents = new List<object>
@@ -148,7 +155,7 @@ public sealed class CodingAgentLoop
 
         Console.WriteLine($"[agent] Starting coding loop ({intent}) provider=gemini");
 
-        for (var turn = 1; turn <= MaxTurns; turn++)
+        for (var turn = 1; turn <= maxTurns; turn++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var reply = await client.GenerateAsync(system, contents, cancellationToken);
@@ -241,13 +248,14 @@ public sealed class CodingAgentLoop
         OpenAiToolClient client,
         string model,
         string providerName,
+        int maxTurns,
         CancellationToken cancellationToken)
     {
         var (system, user, intent) = Prompt(context, ticket, tools);
         var messages = new List<object> { new { role = "user", content = user } };
         Console.WriteLine($"[agent] Starting coding loop ({intent}) provider={providerName} model={model}");
 
-        for (var turn = 1; turn <= MaxTurns; turn++)
+        for (var turn = 1; turn <= maxTurns; turn++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var reply = await client.GenerateAsync(system, messages, cancellationToken);
@@ -326,6 +334,7 @@ public sealed class CodingAgentLoop
 
     private static string Execute(WorkspaceTools tools, string name, string argsJson)
     {
+        RunBudget.Current?.AddToolCalls(1);
         using var args = JsonDocument.Parse(string.IsNullOrWhiteSpace(argsJson) ? "{}" : argsJson);
         var root = args.RootElement;
         string S(string key)

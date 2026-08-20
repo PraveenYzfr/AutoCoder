@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using AutoCoder.Abstractions;
 using AutoCoder.Core.Config;
+using AutoCoder.Core.Resilience;
 
 namespace AutoCoder.Core.Jira;
 
@@ -36,13 +37,7 @@ public sealed class JiraTicketSource : ITicketSource, IDisposable
         }
 
         var url = $"{_baseUrl}/rest/api/3/issue/{Uri.EscapeDataString(ticketKey)}";
-        using var response = await _http.GetAsync(url, cancellationToken);
-        var raw = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new InvalidOperationException(
-                $"Jira fetch failed {(int)response.StatusCode} for {_baseUrl}/browse/{ticketKey}: {Truncate(raw, 400)}");
-        }
+        var raw = await SendAsync($"jira.fetch.{ticketKey}", ct => _http.GetAsync(url, ct), cancellationToken);
 
         using var doc = JsonDocument.Parse(raw);
         return ParseIssue(doc.RootElement);
@@ -56,18 +51,19 @@ public sealed class JiraTicketSource : ITicketSource, IDisposable
             maxResults = 25,
             fields = new[] { "summary", "description", "status", "labels", "assignee", "project", "issuetype", "priority" }
         });
-        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         var url = $"{_baseUrl}/rest/api/3/search/jql";
-        using var response = await _http.PostAsync(url, content, cancellationToken);
-        var raw = await response.Content.ReadAsStringAsync(cancellationToken);
-
-        if (!response.IsSuccessStatusCode)
+        string raw;
+        using (var post = await TransientRetry.SendAsync(
+                   "jira.search",
+                   ct => _http.PostAsync(url, new StringContent(payload, Encoding.UTF8, "application/json"), ct),
+                   cancellationToken))
         {
-            var fallback = $"{_baseUrl}/rest/api/3/search?jql={Uri.EscapeDataString(jql)}&maxResults=25&fields=summary,description,status,labels,assignee,project,issuetype,priority";
-            using var get = await _http.GetAsync(fallback, cancellationToken);
-            raw = await get.Content.ReadAsStringAsync(cancellationToken);
-            if (!get.IsSuccessStatusCode)
-                throw new InvalidOperationException($"Jira search failed {(int)get.StatusCode}: {Truncate(raw, 400)}");
+            raw = await post.Content.ReadAsStringAsync(cancellationToken);
+            if (!post.IsSuccessStatusCode)
+            {
+                var fallback = $"{_baseUrl}/rest/api/3/search?jql={Uri.EscapeDataString(jql)}&maxResults=25&fields=summary,description,status,labels,assignee,project,issuetype,priority";
+                raw = await SendAsync("jira.search.legacy", ct => _http.GetAsync(fallback, ct), cancellationToken);
+            }
         }
 
         using var doc = JsonDocument.Parse(raw);
@@ -173,22 +169,18 @@ public sealed class JiraTicketSource : ITicketSource, IDisposable
         };
 
         var json = JsonSerializer.Serialize(payload);
-        using var content = new StringContent(json, Encoding.UTF8, "application/json");
         var url = $"{_baseUrl}/rest/api/3/issue/{Uri.EscapeDataString(key)}/comment";
-        using var response = await _http.PostAsync(url, content, cancellationToken);
-        var raw = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (!response.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Jira comment failed {(int)response.StatusCode}: {Truncate(raw, 400)}");
+        await SendAsync(
+            $"jira.comment.{key}",
+            ct => _http.PostAsync(url, new StringContent(json, Encoding.UTF8, "application/json"), ct),
+            cancellationToken);
         Console.WriteLine("[jira] Comment posted.");
     }
 
     private async Task TransitionAsync(string key, string statusName, CancellationToken cancellationToken)
     {
         var url = $"{_baseUrl}/rest/api/3/issue/{Uri.EscapeDataString(key)}/transitions";
-        using var get = await _http.GetAsync(url, cancellationToken);
-        var raw = await get.Content.ReadAsStringAsync(cancellationToken);
-        if (!get.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Jira transitions list failed {(int)get.StatusCode}: {Truncate(raw, 400)}");
+        var raw = await SendAsync($"jira.transitions.{key}", ct => _http.GetAsync(url, ct), cancellationToken);
 
         using var doc = JsonDocument.Parse(raw);
         string? id = null;
@@ -216,12 +208,27 @@ public sealed class JiraTicketSource : ITicketSource, IDisposable
         }
 
         var body = JsonSerializer.Serialize(new { transition = new { id } });
-        using var content = new StringContent(body, Encoding.UTF8, "application/json");
-        using var post = await _http.PostAsync(url, content, cancellationToken);
-        var postRaw = await post.Content.ReadAsStringAsync(cancellationToken);
-        if (!post.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Jira transition failed {(int)post.StatusCode}: {Truncate(postRaw, 400)}");
+        await SendAsync(
+            $"jira.transition.{key}",
+            ct => _http.PostAsync(url, new StringContent(body, Encoding.UTF8, "application/json"), ct),
+            cancellationToken);
         Console.WriteLine($"[jira] Transitioned to {statusName}.");
+    }
+
+    private async Task<string> SendAsync(
+        string operation,
+        Func<CancellationToken, Task<HttpResponseMessage>> send,
+        CancellationToken cancellationToken)
+    {
+        using var response = await TransientRetry.SendAsync(operation, send, cancellationToken);
+        var raw = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException(
+                $"{operation} failed {(int)response.StatusCode}: {Truncate(raw, 400)}");
+        }
+
+        return raw;
     }
 
     public void Dispose()

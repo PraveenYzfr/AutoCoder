@@ -5,9 +5,22 @@ using AutoCoder.Core.Config;
 using AutoCoder.Core.DryRun;
 using AutoCoder.Core.Jira;
 using AutoCoder.Core.Llm;
+using AutoCoder.Core.Logging;
 using AutoCoder.Core.Pipelines;
+using Microsoft.Extensions.Logging;
 
 DotEnvLoader.Load();
+
+using var loggerFactory = LoggerFactory.Create(b =>
+{
+    b.AddSimpleConsole(o =>
+    {
+        o.TimestampFormat = "HH:mm:ss ";
+        o.SingleLine = true;
+    });
+    b.SetMinimumLevel(LogLevel.Information);
+});
+RunLog.Configure(loggerFactory.CreateLogger("AutoCoder"));
 
 var configOption = new Option<FileInfo?>(
     name: "--config",
@@ -165,7 +178,7 @@ static async Task RunPipelineAsync(
         }
     };
 
-    await new PipelineRunner().RunAsync(pipeline, context);
+    await new PipelineRunner().RunAsync(pipeline, context, options);
     Console.WriteLine();
     Console.WriteLine(dryRun ? "Dry-run complete." : "Live run complete.");
     Console.WriteLine($"Artifacts: {Path.Combine(artifactsDir, runId)}");

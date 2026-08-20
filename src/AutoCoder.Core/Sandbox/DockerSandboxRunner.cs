@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using AutoCoder.Abstractions;
+using AutoCoder.Core.Resilience;
 
 namespace AutoCoder.Core.Sandbox;
 
@@ -107,6 +108,7 @@ public sealed class DockerSandboxRunner : ISandboxRunner
             "--network", network,
             "--memory", _memory,
             "--cpus", "2",
+            "-e", "CI=true",
             "--security-opt", "no-new-privileges",
             "--mount", $"type=bind,source={hostWork},target=/workspace",
             "--mount", $"type=bind,source={nugetHost},target=/root/.nuget/packages",
@@ -169,11 +171,33 @@ public sealed class DockerSandboxRunner : ISandboxRunner
         return Path.Combine(parent, ".nuget", "packages");
     }
 
-    private static async Task<SandboxCommandResult> DockerAsync(
+    private static Task<SandboxCommandResult> DockerAsync(
         IReadOnlyList<string> args,
         TimeSpan timeout,
         CancellationToken cancellationToken,
         bool throwOnError)
+    {
+        var op = args.Count > 0 ? $"docker.{args[0]}" : "docker";
+        return TransientRetry.RunAsync(op, async ct =>
+        {
+            var result = await DockerOnceAsync(args, timeout, ct);
+            if (result.ExitCode != 0 && TransientRetry.IsTransientDocker(result.StdErr + "\n" + result.StdOut))
+            {
+                throw new TransientFailureException(
+                    op,
+                    $"docker {args[0]} failed ({result.ExitCode}): {result.StdErr}");
+            }
+
+            if (throwOnError && result.ExitCode != 0)
+                throw new InvalidOperationException($"docker {args[0]} failed ({result.ExitCode}): {result.StdErr}");
+            return result;
+        }, cancellationToken);
+    }
+
+    private static async Task<SandboxCommandResult> DockerOnceAsync(
+        IReadOnlyList<string> args,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
     {
         var psi = new ProcessStartInfo
         {
@@ -213,8 +237,6 @@ public sealed class DockerSandboxRunner : ISandboxRunner
             StdOut = stdOut.ToString(),
             StdErr = stdErr.ToString()
         };
-        if (throwOnError && process.ExitCode != 0)
-            throw new InvalidOperationException($"docker {args[0]} failed ({process.ExitCode}): {result.StdErr}");
         return result;
     }
 }

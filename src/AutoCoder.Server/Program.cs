@@ -1,10 +1,11 @@
-using System.Security.Cryptography;
 using System.Text;
 using AutoCoder.Abstractions.Config;
 using AutoCoder.Core.Config;
 using AutoCoder.Core.Llm;
+using AutoCoder.Core.Logging;
 using AutoCoder.Core.Webhooks;
 using AutoCoder.Server;
+using Microsoft.Extensions.Logging;
 
 DotEnvLoader.Load();
 
@@ -15,12 +16,20 @@ var options = AutoCoderConfigLoader.Load(configPath);
 var loadedFrom = AutoCoderConfigLoader.ResolvePath(configPath) ?? "(defaults)";
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Logging.ClearProviders();
+builder.Logging.AddJsonConsole(o =>
+{
+    o.IncludeScopes = true;
+    o.TimestampFormat = "O";
+    o.UseUtcTimestamp = true;
+});
 builder.WebHost.UseUrls($"http://0.0.0.0:{options.Webhooks.ListenPort}");
 builder.Services.AddSingleton(options);
 builder.Services.AddSingleton<WebhookRunDispatcher>();
 builder.Services.AddHostedService<JiraPoller>();
 
 var app = builder.Build();
+RunLog.Configure(app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("AutoCoder"));
 var webhookPath = string.IsNullOrWhiteSpace(options.Webhooks.Path)
     ? "/webhook/jira"
     : options.Webhooks.Path;
@@ -75,8 +84,19 @@ async Task<IResult> HandleJiraWebhook(HttpRequest request, AutoCoderOptions opts
     }
 
     var body = await new StreamReader(request.Body).ReadToEndAsync(ct);
-    if (!ValidateSecret(request, opts.Webhooks, body, out var secretError))
+    if (!WebhookAuthenticator.Validate(
+            opts.Webhooks,
+            body,
+            Environment.GetEnvironmentVariable(opts.Webhooks.SecretEnv),
+            request.Headers["X-Hub-Signature"].FirstOrDefault(),
+            request.Headers["X-AutoCoder-Token"].FirstOrDefault(),
+            request.Headers["Authorization"].FirstOrDefault(),
+            request.Query.TryGetValue("token", out var q) ? q.ToString() : null,
+            out var secretError))
+    {
+        RunLog.Event("webhook.rejected", level: LogLevel.Warning, fields: ("reason", secretError ?? "unauthorized"));
         return Results.Json(new { accepted = false, error = secretError }, statusCode: StatusCodes.Status401Unauthorized);
+    }
 
     if (!JiraWebhookParser.TryParse(body, out var parsed, out var parseError) || parsed is null)
         return Results.Json(new { accepted = false, skipped = true, reason = parseError });
@@ -131,70 +151,5 @@ Console.WriteLine("  health:            GET  /health");
 
 app.Run();
 
-static bool ValidateSecret(HttpRequest request, WebhooksOptions webhooks, string body, out string? error)
-{
-    error = null;
-    var expected = Environment.GetEnvironmentVariable(webhooks.SecretEnv);
-
-    if (string.IsNullOrEmpty(expected))
-    {
-        if (webhooks.RequireSecret)
-        {
-            error = $"Secret env '{webhooks.SecretEnv}' is empty and require_secret=true.";
-            return false;
-        }
-
-        return true;
-    }
-
-    var headerToken =
-        request.Headers["X-Hub-Signature"].FirstOrDefault()
-        ?? request.Headers["X-AutoCoder-Token"].FirstOrDefault()
-        ?? request.Headers["Authorization"].FirstOrDefault()?.Replace("Bearer ", "", StringComparison.OrdinalIgnoreCase);
-
-    if (!string.IsNullOrEmpty(headerToken))
-    {
-        if (headerToken.StartsWith("sha256=", StringComparison.OrdinalIgnoreCase))
-        {
-            var provided = headerToken["sha256=".Length..];
-            using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(expected));
-            var hash = Convert.ToHexString(hmac.ComputeHash(Encoding.UTF8.GetBytes(body))).ToLowerInvariant();
-            if (!FixedEquals(hash, provided.ToLowerInvariant()))
-            {
-                error = "HMAC signature mismatch.";
-                return false;
-            }
-
-            return true;
-        }
-
-        if (!FixedEquals(headerToken, expected))
-        {
-            error = "Token header mismatch.";
-            return false;
-        }
-
-        return true;
-    }
-
-    if (request.Query.TryGetValue("token", out var q) && FixedEquals(q.ToString(), expected))
-        return true;
-
-    if (webhooks.RequireSecret)
-    {
-        error = "Missing webhook secret header/query token.";
-        return false;
-    }
-
-    return true;
-}
-
 static bool HasEnv(string name) =>
     !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(name));
-
-static bool FixedEquals(string a, string b)
-{
-    var ba = Encoding.UTF8.GetBytes(a);
-    var bb = Encoding.UTF8.GetBytes(b);
-    return ba.Length == bb.Length && CryptographicOperations.FixedTimeEquals(ba, bb);
-}

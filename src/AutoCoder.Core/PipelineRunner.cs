@@ -1,25 +1,58 @@
 using AutoCoder.Abstractions;
+using AutoCoder.Abstractions.Config;
+using AutoCoder.Core.Logging;
+using AutoCoder.Core.Resilience;
+using AutoCoder.Core.Runs;
+using Microsoft.Extensions.Logging;
 
 namespace AutoCoder.Core;
 
 public sealed class PipelineRunner
 {
-    public async Task RunAsync(IPipeline pipeline, PipelineContext context, CancellationToken cancellationToken = default)
+    public Task RunAsync(IPipeline pipeline, PipelineContext context, CancellationToken cancellationToken = default) =>
+        RunAsync(pipeline, context, options: null, cancellationToken);
+
+    public async Task RunAsync(
+        IPipeline pipeline,
+        PipelineContext context,
+        AutoCoderOptions? options,
+        CancellationToken cancellationToken = default)
     {
-        Console.WriteLine($"AutoCoder run {context.RunId} · pipeline={pipeline.Name} · dryRun={context.DryRun}");
-        Console.WriteLine();
+        RunLog.Event("run.started", context, fields: ("pipeline", pipeline.Name));
+
+        if (options is not null)
+        {
+            RunConcurrency.Configure(options.Limits);
+            TransientRetry.Configure(options.Resilience);
+        }
+
+        using var budget = RunBudget.Enter(context, options?.Limits);
+        using var slot = await RunConcurrency.AcquireAsync(cancellationToken);
 
         foreach (var step in pipeline.Steps)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var started = DateTime.UtcNow;
+            RunLog.Event("step.started", context, fields: ("step", step.Name));
             try
             {
                 await step.ExecuteAsync(context, cancellationToken);
+                budget.ThrowIfExceeded();
+                RunLog.Event(
+                    "step.succeeded",
+                    context,
+                    fields: [("step", step.Name), ("ms", (DateTime.UtcNow - started).TotalMilliseconds)]);
             }
             catch (Exception ex)
             {
                 context.FailureReason ??= ex.Message;
-                Console.Error.WriteLine($"Step '{step.Name}' failed: {ex.Message}");
+                RunLog.Event(
+                    "step.failed",
+                    context,
+                    LogLevel.Error,
+                    ex,
+                    ("step", step.Name),
+                    ("ms", (DateTime.UtcNow - started).TotalMilliseconds));
 
                 if (step.Name != "WritebackTicket")
                 {
@@ -29,7 +62,7 @@ public sealed class PipelineRunner
                         try { await writeback.ExecuteAsync(context, cancellationToken); }
                         catch (Exception wb)
                         {
-                            Console.Error.WriteLine($"Writeback after failure: {wb.Message}");
+                            RunLog.Event("writeback.failed", context, LogLevel.Error, wb, ("afterStep", step.Name));
                         }
                     }
                 }
@@ -41,9 +74,12 @@ public sealed class PipelineRunner
                         await persist.ExecuteAsync(context, cancellationToken);
                 }
 
+                RunLog.Event("run.failed", context, LogLevel.Error, ex, ("step", step.Name));
                 throw;
             }
         }
+
+        RunLog.Event("run.succeeded", context);
     }
 
     public static string NewRunId(string? slug = null)

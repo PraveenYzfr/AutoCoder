@@ -5,4 +5,7 @@
     <Project Path="src/AutoCoder.Core/AutoCoder.Core.csproj" />
     <Project Path="src/AutoCoder.Server/AutoCoder.Server.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AutoCoder.Tests/AutoCoder.Tests.csproj" />
+  </Folder>
 </Solution>

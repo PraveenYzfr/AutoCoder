@@ -2,6 +2,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AutoCoder.Core.Llm;
+using AutoCoder.Core.Resilience;
 
 namespace AutoCoder.Core.Agent;
 
@@ -48,10 +49,15 @@ internal sealed class GeminiToolClient
             ["generationConfig"] = new { temperature = 0.2, maxOutputTokens = 8192 }
         };
 
-        using var response = await _http.PostAsJsonAsync(url, payload, Json, cancellationToken);
+        using var response = await TransientRetry.SendAsync(
+            "agent.gemini",
+            ct => _http.PostAsJsonAsync(url, payload, Json, ct),
+            cancellationToken);
         var raw = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException($"Gemini agent error {(int)response.StatusCode}: {raw[..Math.Min(800, raw.Length)]}");
+
+        LlmUsage.AddGeminiUsage(_model, raw);
 
         using var doc = JsonDocument.Parse(raw);
         var parts = new List<GeminiPart>();

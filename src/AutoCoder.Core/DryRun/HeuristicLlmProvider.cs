@@ -1,4 +1,5 @@
 using AutoCoder.Abstractions;
+using AutoCoder.Core.Llm;
 
 namespace AutoCoder.Core.DryRun;
 
@@ -26,13 +27,7 @@ public sealed class HeuristicLlmProvider : ILlmProvider
             - Auto-merge
             """;
 
-        return Task.FromResult(new LlmResponse
-        {
-            Content = content,
-            PromptTokens = EstimateTokens(user),
-            CompletionTokens = EstimateTokens(content),
-            EstimatedUsdCost = 0m
-        });
+        return Task.FromResult(LlmUsage.Complete("heuristic", "none", content, EstimateTokens(user), EstimateTokens(content)));
     }
 
     private static int EstimateTokens(string text) => Math.Max(1, text.Length / 4);

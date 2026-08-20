@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using AutoCoder.Abstractions;
+using AutoCoder.Core.Resilience;
 
 namespace AutoCoder.Core.GitHub;
 
@@ -131,13 +132,15 @@ public sealed class GitHubRepoHost : IRepoHost, IDisposable
             ["draft"] = request.Draft
         });
 
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, $"https://api.github.com/repos/{owner}/{repo}/pulls")
+        using var response = await TransientRetry.SendAsync("github.pr", async ct =>
         {
-            Content = new StringContent(json, Encoding.UTF8, "application/json")
-        };
-        await ApplyAuthAsync(httpRequest, cancellationToken);
-
-        using var response = await _http.SendAsync(httpRequest, cancellationToken);
+            var httpRequest = new HttpRequestMessage(HttpMethod.Post, $"https://api.github.com/repos/{owner}/{repo}/pulls")
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            };
+            await ApplyAuthAsync(httpRequest, ct);
+            return await _http.SendAsync(httpRequest, ct);
+        }, cancellationToken);
         var raw = await response.Content.ReadAsStringAsync(cancellationToken);
 
         if (!response.IsSuccessStatusCode)
@@ -177,9 +180,12 @@ public sealed class GitHubRepoHost : IRepoHost, IDisposable
         string owner, string repo, string head, string @base, CancellationToken ct)
     {
         var url = $"https://api.github.com/repos/{owner}/{repo}/pulls?state=open&head={owner}:{Uri.EscapeDataString(head)}&base={Uri.EscapeDataString(@base)}";
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url);
-        await ApplyAuthAsync(httpRequest, ct);
-        using var response = await _http.SendAsync(httpRequest, ct);
+        using var response = await TransientRetry.SendAsync("github.pr.lookup", async token =>
+        {
+            var httpRequest = new HttpRequestMessage(HttpMethod.Get, url);
+            await ApplyAuthAsync(httpRequest, token);
+            return await _http.SendAsync(httpRequest, token);
+        }, ct);
         var raw = await response.Content.ReadAsStringAsync(ct);
         if (!response.IsSuccessStatusCode)
             return null;
@@ -233,11 +239,46 @@ public sealed class GitHubRepoHost : IRepoHost, IDisposable
         return u;
     }
 
-    private static async Task<SandboxCommandResult> GitAsync(
+    private static Task<SandboxCommandResult> GitAsync(
         string workDirectory,
         IReadOnlyList<string> args,
         CancellationToken cancellationToken)
     {
+        var op = args.Count > 0 ? $"git.{args[0]}" : "git";
+        if (!ShouldRetryGit(args))
+            return GitOnceAsync(workDirectory, args, cancellationToken);
+
+        return TransientRetry.RunAsync(op, async ct =>
+        {
+            try
+            {
+                return await GitOnceAsync(workDirectory, args, ct);
+            }
+            catch (InvalidOperationException ex) when (TransientRetry.IsTransientGit(ex.Message))
+            {
+                throw new TransientFailureException(op, ex.Message, inner: ex);
+            }
+        }, cancellationToken);
+    }
+
+    private static bool ShouldRetryGit(IReadOnlyList<string> args) =>
+        args.Count > 0 && args[0] is "clone" or "fetch" or "pull" or "push";
+
+    private static async Task<SandboxCommandResult> GitOnceAsync(
+        string workDirectory,
+        IReadOnlyList<string> args,
+        CancellationToken cancellationToken)
+    {
+        if (args.Count > 0 && args[0] == "clone")
+        {
+            var dest = args[^1];
+            if (Directory.Exists(dest))
+            {
+                try { Directory.Delete(dest, recursive: true); }
+                catch { /* clone will fail with a clear error if dest cannot be removed */ }
+            }
+        }
+
         var psi = new ProcessStartInfo
         {
             FileName = "git",

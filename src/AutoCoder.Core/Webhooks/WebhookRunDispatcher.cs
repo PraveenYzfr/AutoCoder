@@ -4,6 +4,7 @@ using AutoCoder.Core;
 using AutoCoder.Core.Config;
 using AutoCoder.Core.Jira;
 using AutoCoder.Core.Llm;
+using AutoCoder.Core.Logging;
 using AutoCoder.Core.Pipelines;
 using AutoCoder.Core.Runs;
 
@@ -103,6 +104,9 @@ public sealed class WebhookRunDispatcher
             return false;
 
         runId = PipelineRunner.NewRunId(ticket.Key.ToLowerInvariant());
+        RunLog.Event(
+            "webhook.queued",
+            fields: [("ticket", ticket.Key), ("runId", runId), ("project", projectName)]);
         var capturedRunId = runId;
         _ = Task.Run(async () =>
         {
@@ -169,7 +173,7 @@ public sealed class WebhookRunDispatcher
             }
         };
 
-        await new PipelineRunner().RunAsync(pipeline, context, cancellationToken);
+        await new PipelineRunner().RunAsync(pipeline, context, _options, cancellationToken);
         return runId;
     }
 

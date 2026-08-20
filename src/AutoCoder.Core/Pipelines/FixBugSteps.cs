@@ -192,7 +192,7 @@ public sealed class AgenticImplementStep(AutoCoderOptions options) : IPipelineSt
     }
 }
 
-public sealed class BuildStep(ISandboxRunner sandbox) : IPipelineStep
+public sealed class BuildStep(AutoCoderOptions options, ISandboxRunner sandbox) : IPipelineStep
 {
     public string Name => "Build";
 
@@ -206,34 +206,57 @@ public sealed class BuildStep(ISandboxRunner sandbox) : IPipelineStep
         }
 
         var work = context.WorkDirectory ?? throw new InvalidOperationException("WorkDirectory required.");
-        var sln = Find(work, "*.sln") ?? Find(work, "*.slnx") ?? Find(work, "*.csproj");
-        if (sln is null)
+        var gates = PipelineGates.For(options, context.PipelineName);
+        var ran = false;
+
+        if (ProductStack.HasNode(work))
         {
-            Console.WriteLine($"[{Name}] No .NET project found — skipping compile gate.");
-            context.BuildSucceeded = true;
-            return;
+            ran = true;
+            var install = File.Exists(Path.Combine(work, "package-lock.json"))
+                ? await sandbox.RunAllowlistedAsync("npm", ["ci"], cancellationToken)
+                : await sandbox.RunAllowlistedAsync("npm", ["install"], cancellationToken);
+            Console.WriteLine($"[{Name}] npm install/ci exit={install.ExitCode}");
+            FailIf(install, "npm ci/install failed");
         }
 
-        var rel = Path.GetRelativePath(work, sln);
-        var result = await sandbox.RunAllowlistedAsync("dotnet", ["build", rel, "--nologo", "-v", "q"], cancellationToken);
-        Console.WriteLine($"[{Name}] dotnet build exit={result.ExitCode}");
-        if (result.ExitCode != 0)
+        if (ProductStack.HasDotnet(work))
         {
-            context.BuildSucceeded = false;
-            context.FailureReason = $"Build failed:\n{result.StdOut}\n{result.StdErr}";
-            throw new InvalidOperationException(context.FailureReason);
+            ran = true;
+            var sln = ProductStack.DotnetBuildTarget(work)
+                      ?? throw new InvalidOperationException("dotnet project vanished.");
+            var rel = ProductStack.Rel(work, sln);
+            var result = await sandbox.RunAllowlistedAsync("dotnet", ["build", rel, "--nologo", "-v", "q"], cancellationToken);
+            Console.WriteLine($"[{Name}] dotnet build exit={result.ExitCode}");
+            FailIf(result, "Build failed");
+        }
+
+        if (ProductStack.HasPython(work))
+        {
+            ran = true;
+            var result = await sandbox.RunAllowlistedAsync("python", ["-m", "compileall", "-q", "."], cancellationToken);
+            Console.WriteLine($"[{Name}] python compileall exit={result.ExitCode}");
+            FailIf(result, "python compileall failed");
+        }
+
+        if (!ran)
+        {
+            if (gates.RequireBuild)
+                throw new InvalidOperationException("No Node, .NET, or Python project found — require_build is true.");
+            Console.WriteLine($"[{Name}] No supported project — require_build is false.");
         }
 
         context.BuildSucceeded = true;
     }
 
-    private static string? Find(string work, string pattern) =>
-        Directory.EnumerateFiles(work, pattern, SearchOption.AllDirectories)
-            .FirstOrDefault(p => !p.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}")
-                                 && !p.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}"));
+    private static void FailIf(SandboxCommandResult result, string title)
+    {
+        if (result.ExitCode == 0)
+            return;
+        throw new InvalidOperationException($"{title}:\n{result.StdOut}\n{result.StdErr}");
+    }
 }
 
-public sealed class TestStep(ISandboxRunner sandbox) : IPipelineStep
+public sealed class TestStep(AutoCoderOptions options, ISandboxRunner sandbox) : IPipelineStep
 {
     public string Name => "Test";
 
@@ -247,28 +270,70 @@ public sealed class TestStep(ISandboxRunner sandbox) : IPipelineStep
         }
 
         var work = context.WorkDirectory ?? throw new InvalidOperationException("WorkDirectory required.");
-        var target = Directory.EnumerateFiles(work, "*.sln", SearchOption.AllDirectories).FirstOrDefault()
-                     ?? Directory.EnumerateFiles(work, "*.slnx", SearchOption.AllDirectories).FirstOrDefault()
-                     ?? Directory.EnumerateFiles(work, "*Test*.csproj", SearchOption.AllDirectories)
-                         .FirstOrDefault(p => !p.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}"));
-        if (target is null)
+        var gates = PipelineGates.For(options, context.PipelineName);
+        var ran = false;
+
+        if (ProductStack.HasNode(work))
         {
-            Console.WriteLine($"[{Name}] No test project — skipping tests.");
-            context.TestsSucceeded = true;
-            return;
+            if (!ProductStack.HasNpmTestScript(work))
+            {
+                if (gates.RequireTests)
+                    throw new InvalidOperationException("package.json has no \"test\" script — require_tests is true. Add npm test.");
+            }
+            else
+            {
+                ran = true;
+                var result = await sandbox.RunAllowlistedAsync("npm", ["test"], cancellationToken);
+                Console.WriteLine($"[{Name}] npm test exit={result.ExitCode}");
+                FailIf(result, "npm test failed");
+            }
         }
 
-        var rel = Path.GetRelativePath(work, target);
-        var result = await sandbox.RunAllowlistedAsync("dotnet", ["test", rel, "--nologo"], cancellationToken);
-        Console.WriteLine($"[{Name}] dotnet test exit={result.ExitCode}");
-        if (result.ExitCode != 0)
+        if (ProductStack.HasDotnet(work))
         {
-            context.TestsSucceeded = false;
-            context.FailureReason = $"Tests failed:\n{result.StdOut}\n{result.StdErr}";
-            throw new InvalidOperationException(context.FailureReason);
+            var target = ProductStack.DotnetTestTarget(work);
+            if (target is null)
+            {
+                if (gates.RequireTests)
+                    throw new InvalidOperationException("No .NET test project — require_tests is true.");
+            }
+            else
+            {
+                ran = true;
+                var rel = ProductStack.Rel(work, target);
+                var result = await sandbox.RunAllowlistedAsync("dotnet", ["test", rel, "--nologo"], cancellationToken);
+                Console.WriteLine($"[{Name}] dotnet test exit={result.ExitCode}");
+                FailIf(result, "Tests failed");
+            }
         }
+
+        if (ProductStack.HasPython(work))
+        {
+            if (!ProductStack.HasPythonTests(work))
+            {
+                if (gates.RequireTests)
+                    throw new InvalidOperationException("No pytest files — require_tests is true.");
+            }
+            else
+            {
+                ran = true;
+                var result = await sandbox.RunAllowlistedAsync("pytest", [], cancellationToken);
+                Console.WriteLine($"[{Name}] pytest exit={result.ExitCode}");
+                FailIf(result, "pytest failed");
+            }
+        }
+
+        if (!ran && !ProductStack.Any(work) && gates.RequireTests)
+            throw new InvalidOperationException("No Node, .NET, or Python tests found — require_tests is true.");
 
         context.TestsSucceeded = true;
+    }
+
+    private static void FailIf(SandboxCommandResult result, string title)
+    {
+        if (result.ExitCode == 0)
+            return;
+        throw new InvalidOperationException($"{title}:\n{result.StdOut}\n{result.StdErr}");
     }
 }
 
@@ -336,17 +401,6 @@ public sealed class SecretScanStep : IPipelineStep
 {
     public string Name => "SecretScan";
 
-    private static readonly string[] Markers =
-    [
-        "BEGIN PRIVATE KEY",
-        "BEGIN RSA PRIVATE KEY",
-        "ghp_",
-        "gho_",
-        "github_pat_",
-        "xoxb-",
-        "AKIA"
-    ];
-
     public Task ExecuteAsync(PipelineContext context, CancellationToken cancellationToken = default)
     {
         if (context.DryRun)
@@ -355,41 +409,7 @@ public sealed class SecretScanStep : IPipelineStep
             return Task.CompletedTask;
         }
 
-        var work = context.WorkDirectory ?? throw new InvalidOperationException("WorkDirectory required.");
-        var files = context.ChangedRelativePaths.Count > 0
-            ? context.ChangedRelativePaths
-            : Directory.EnumerateFiles(work, "*", SearchOption.AllDirectories)
-                .Select(f => Path.GetRelativePath(work, f).Replace('\\', '/'))
-                .ToList();
-
-        foreach (var rel in files)
-        {
-            if (rel.StartsWith(".git/", StringComparison.OrdinalIgnoreCase)
-                || rel.StartsWith(".autocoder/", StringComparison.OrdinalIgnoreCase)
-                || rel.Contains("/bin/")
-                || rel.Contains("/obj/")
-                || rel.Contains("node_modules/"))
-                continue;
-
-            var full = Path.Combine(work, rel.Replace('/', Path.DirectorySeparatorChar));
-            if (!File.Exists(full))
-                continue;
-
-            string text;
-            try { text = File.ReadAllText(full); }
-            catch { continue; }
-
-            if (text.Length > 500_000)
-                continue;
-
-            foreach (var marker in Markers)
-            {
-                if (text.Contains(marker, StringComparison.Ordinal))
-                    throw new InvalidOperationException($"Secret-like token '{marker}' found in {rel}. Refusing commit.");
-            }
-        }
-
-        Console.WriteLine($"[{Name}] No obvious secrets in workspace.");
+        SecretScanner.Scan(context);
         return Task.CompletedTask;
     }
 }
@@ -500,16 +520,16 @@ public sealed class PersistRunResultStep : IPipelineStep
             - Dry run: {context.DryRun}
             - Product files changed: {context.ProductFilesChanged}
             - Build: {context.BuildSucceeded}  Tests: {context.TestsSucceeded}
+            - Tokens: prompt={context.Spend.PromptTokens} completion={context.Spend.CompletionTokens} total={context.Spend.TotalTokens}
+            - Tool calls: {context.Spend.ToolCalls}
+            - Estimated USD: {context.Spend.EstimatedUsd:F4}
             - Done status: {context.DoneStatus ?? "In Review"}
             - Failed status: {context.FailedStatus ?? "Agent Failure"}
             - No auto-merge.
             """;
         await File.WriteAllTextAsync(Path.Combine(dir, "decisions.md"), decisions, cancellationToken);
 
-        var promptTokens = context.Items.TryGetValue("promptTokens", out var pt) ? pt : 0;
-        var completionTokens = context.Items.TryGetValue("completionTokens", out var ct) ? ct : 0;
-        var usd = context.Items.TryGetValue("estimatedUsd", out var u) ? u : 0m;
-
+        var spend = context.Spend;
         var result = $"""
             # Result
 
@@ -521,8 +541,9 @@ public sealed class PersistRunResultStep : IPipelineStep
             - PR: {context.PullRequest?.Url ?? "n/a"}
             - Agent: {context.AgentSummary ?? "n/a"}
             - Dry run: {context.DryRun}
-            - Tokens: prompt={promptTokens} completion={completionTokens}
-            - Estimated USD: {usd}
+            - Tokens: prompt={spend.PromptTokens} completion={spend.CompletionTokens} total={spend.TotalTokens}
+            - Tool calls: {spend.ToolCalls}
+            - Estimated USD: {spend.EstimatedUsd:F4}
             """;
         await File.WriteAllTextAsync(Path.Combine(dir, "result.md"), result, cancellationToken);
 
