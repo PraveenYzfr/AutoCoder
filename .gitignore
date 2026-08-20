@@ -7,7 +7,14 @@ obj/
 TestResults/
 
 ## AutoCoder runtime
-runs/
+# Root-anchored: an unanchored `runs/` matches ANY directory named runs at
+# any depth, which silently excluded src/AutoCoder.Core/Runs/ - three source
+# files that the solution references. The repo built locally, where the files
+# exist on disk, and failed for anyone who cloned it.
+/runs/
+# The actual runtime output directory, named explicitly rather than by a
+# wildcard that also matches source folders.
+src/AutoCoder.Server/runs/
 .env
 /autocoder.yml
 *.db
