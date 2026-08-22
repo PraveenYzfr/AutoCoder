@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AutoCoder runs</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>AutoCoder</h1>
+      <div class="sub">Live: Jira ticket → clone → plan → code → PR</div>
+      <div class="sub" id="routing"></div>
+    </div>
+    <div class="sub"><a href="/health">/health</a> · read-only</div>
+  </header>
+  <main>
+    <div class="filters">
+      <input id="ticket" placeholder="Filter ticket" autocomplete="off">
+      <select id="status">
+        <option value="">All statuses</option>
+        <option>running</option>
+        <option>succeeded</option>
+        <option>failed</option>
+        <option>dry-run</option>
+      </select>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Ticket</th><th>Now</th><th>Progress</th><th>Pull request</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </main>
+  <script src="/app.js"></script>
+  <script>listPage();</script>
+</body>
+</html>

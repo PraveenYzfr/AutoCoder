@@ -25,6 +25,8 @@ public sealed class RoutedLlmProvider : ILlmProvider
     public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken cancellationToken = default)
     {
         var cheap = IsCheap(request.ModelRole, _roleTiers);
+        LlmCallContext.CurrentRole = request.ModelRole;
+        LlmCallContext.CurrentTier = cheap ? "cheap" : "costly";
         Console.WriteLine($"[llm] role={request.ModelRole} tier={(cheap ? "cheap" : "costly")}");
         var backend = cheap ? _cheap : _costly;
         return backend.CompleteAsync(request, cancellationToken);

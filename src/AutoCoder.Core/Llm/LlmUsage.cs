@@ -1,4 +1,5 @@
 using AutoCoder.Abstractions;
+using AutoCoder.Core.Logging;
 using AutoCoder.Core.Runs;
 
 namespace AutoCoder.Core.Llm;
@@ -7,8 +8,7 @@ internal static class LlmUsage
 {
     public static LlmResponse Complete(string provider, string model, string content, int promptTokens, int completionTokens)
     {
-        var usd = LlmPricing.Estimate(provider, model, promptTokens, completionTokens);
-        Current?.AddLlm(promptTokens, completionTokens, usd);
+        var usd = Record(provider, model, promptTokens, completionTokens);
         return new LlmResponse
         {
             Content = content,
@@ -18,10 +18,32 @@ internal static class LlmUsage
         };
     }
 
-    public static void Add(string provider, string model, int promptTokens, int completionTokens)
+    public static void Add(string provider, string model, int promptTokens, int completionTokens) =>
+        Record(provider, model, promptTokens, completionTokens);
+
+    private static decimal Record(string provider, string model, int promptTokens, int completionTokens)
     {
         var usd = LlmPricing.Estimate(provider, model, promptTokens, completionTokens);
         Current?.AddLlm(promptTokens, completionTokens, usd);
+        var ctx = Current?.Context;
+        if (ctx is not null)
+        {
+            RunLog.Event(
+                "llm.call",
+                ctx,
+                fields:
+                [
+                    ("role", LlmCallContext.CurrentRole ?? "unknown"),
+                    ("tier", LlmCallContext.CurrentTier ?? "unknown"),
+                    ("provider", provider),
+                    ("model", model),
+                    ("prompt", promptTokens),
+                    ("completion", completionTokens),
+                    ("usd", usd)
+                ]);
+        }
+
+        return usd;
     }
 
     public static void AddOpenAiUsage(string provider, string model, string rawJson)

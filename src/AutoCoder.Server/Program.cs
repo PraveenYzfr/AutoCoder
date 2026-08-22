@@ -1,6 +1,8 @@
 using System.Text;
+using System.Text.Json;
 using AutoCoder.Abstractions.Config;
 using AutoCoder.Core.Config;
+using AutoCoder.Core.Dashboard;
 using AutoCoder.Core.Llm;
 using AutoCoder.Core.Logging;
 using AutoCoder.Core.Webhooks;
@@ -24,6 +26,8 @@ builder.Logging.AddJsonConsole(o =>
     o.UseUtcTimestamp = true;
 });
 builder.WebHost.UseUrls($"http://0.0.0.0:{options.Webhooks.ListenPort}");
+builder.Services.ConfigureHttpJsonOptions(o =>
+    o.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase);
 builder.Services.AddSingleton(options);
 builder.Services.AddSingleton<WebhookRunDispatcher>();
 builder.Services.AddHostedService<JiraPoller>();
@@ -33,6 +37,60 @@ RunLog.Configure(app.Services.GetRequiredService<ILoggerFactory>().CreateLogger(
 var webhookPath = string.IsNullOrWhiteSpace(options.Webhooks.Path)
     ? "/webhook/jira"
     : options.Webhooks.Path;
+
+app.UseStaticFiles();
+
+IResult RequireUi(HttpRequest request, HttpResponse response, Func<IResult> ok)
+{
+    if (DashboardAuth.IsAllowed(request))
+    {
+        var token = request.Query["token"].ToString();
+        if (!string.IsNullOrWhiteSpace(token))
+            DashboardAuth.Remember(response, token);
+        return ok();
+    }
+
+    if (request.Path.StartsWithSegments("/api"))
+        return Results.Json(new { error = "dashboard locked" }, statusCode: 401);
+    return Results.Content(File.ReadAllText(Path.Combine(app.Environment.WebRootPath ?? "wwwroot", "index.html")), "text/html");
+}
+
+app.MapGet("/", (HttpRequest request, HttpResponse response) =>
+    RequireUi(request, response, () =>
+        Results.Content(File.ReadAllText(Path.Combine(app.Environment.WebRootPath ?? "wwwroot", "index.html")), "text/html")));
+
+app.MapGet("/runs/{id}", (HttpRequest request, HttpResponse response) =>
+    RequireUi(request, response, () =>
+        Results.Content(File.ReadAllText(Path.Combine(app.Environment.WebRootPath ?? "wwwroot", "run.html")), "text/html")));
+
+app.MapGet("/api/ui/routing", (HttpRequest request, HttpResponse response, AutoCoderOptions opts) =>
+    RequireUi(request, response, () =>
+    {
+        var routing = LlmProviderFactory.Describe(opts);
+        return Results.Ok(new
+        {
+            llm = routing.AgentType,
+            cheap = $"{routing.CheapType}/{routing.CheapModel}",
+            costly = $"{routing.CostlyType}/{routing.CostlyModel}",
+            coding = $"{routing.CodingType}/{routing.CodingModel}"
+        });
+    }));
+
+app.MapGet("/api/runs", (HttpRequest request, HttpResponse response, AutoCoderOptions opts) =>
+    RequireUi(request, response, () => Results.Ok(RunCatalog.List(RunCatalog.ResolveRoot(opts)))));
+
+app.MapGet("/api/runs/current", (HttpRequest request, HttpResponse response, AutoCoderOptions opts) =>
+    RequireUi(request, response, () => Results.Ok(RunCatalog.Current(RunCatalog.ResolveRoot(opts)))));
+
+app.MapGet("/api/runs/{runId}", (string runId, HttpRequest request, HttpResponse response, AutoCoderOptions opts) =>
+    RequireUi(request, response, () =>
+    {
+        var detail = RunCatalog.Get(RunCatalog.ResolveRoot(opts), runId);
+        return detail is null ? Results.NotFound() : Results.Ok(detail);
+    }));
+
+app.MapGet("/api/runs/{runId}/log", (string runId, HttpRequest request, HttpResponse response, AutoCoderOptions opts) =>
+    RequireUi(request, response, () => Results.Ok(RunCatalog.ReadLog(RunCatalog.ResolveRoot(opts), runId))));
 
 app.MapGet("/health", (AutoCoderOptions opts) =>
 {
@@ -148,6 +206,7 @@ Console.WriteLine($"  webhooks.dry_run:  {options.Webhooks.DryRun}");
 Console.WriteLine($"  listen:            http://0.0.0.0:{options.Webhooks.ListenPort}");
 Console.WriteLine($"  path:              POST {webhookPath}");
 Console.WriteLine("  health:            GET  /health");
+Console.WriteLine("  dashboard:         GET  /  (AUTOCODER_UI_TOKEN or Cloudflare Access)");
 
 app.Run();
 

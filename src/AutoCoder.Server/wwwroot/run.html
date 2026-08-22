@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AutoCoder run</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header>
+    <div>
+      <a href="/">← Runs</a>
+      <h1 id="title">Run</h1>
+      <div class="sub" id="meta"></div>
+    </div>
+    <div id="status"></div>
+  </header>
+  <main>
+    <section class="card pr-banner" id="prBanner"></section>
+    <section class="card">
+      <h2>Live progress — Jira ticket to PR</h2>
+      <div class="journey" id="journey"></div>
+    </section>
+    <details class="card">
+      <summary>Internal pipeline steps</summary>
+      <div class="stages" id="stages"></div>
+    </details>
+    <section class="card">
+      <h2>Coding</h2>
+      <div id="coding"></div>
+    </section>
+    <section class="card">
+      <h2>Models</h2>
+      <p class="sub">Which model did scout, plan, code, and summarize on this run.</p>
+      <div id="models"></div>
+    </section>
+    <section class="card">
+      <h2>Outcome</h2>
+      <div id="outcome"></div>
+    </section>
+    <details class="card">
+      <summary>Ticket brief</summary>
+      <pre class="md" id="brief"></pre>
+    </details>
+    <details class="card">
+      <summary>Scout</summary>
+      <pre class="md" id="scout"></pre>
+    </details>
+    <details class="card">
+      <summary>Plan</summary>
+      <pre class="md" id="plan"></pre>
+    </details>
+    <details class="card">
+      <summary>Event log</summary>
+      <pre id="log"></pre>
+    </details>
+  </main>
+  <script src="/app.js"></script>
+  <script>detailPage();</script>
+</body>
+</html>

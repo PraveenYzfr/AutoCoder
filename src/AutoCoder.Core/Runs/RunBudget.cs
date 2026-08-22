@@ -10,6 +10,8 @@ public sealed class RunBudget : IDisposable
 
     public static RunBudget? Current => Ambient.Value;
 
+    public PipelineContext Context => _context;
+
     private readonly PipelineContext _context;
     private readonly LimitsOptions _limits;
     private readonly RunBudget? _previous;

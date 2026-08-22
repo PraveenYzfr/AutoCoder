@@ -2,6 +2,7 @@ using System.Text.Json;
 using AutoCoder.Abstractions;
 using AutoCoder.Abstractions.Config;
 using AutoCoder.Core.Llm;
+using AutoCoder.Core.Logging;
 using AutoCoder.Core.Runs;
 
 namespace AutoCoder.Core.Agent;
@@ -80,7 +81,7 @@ public sealed class CodingAgentLoop
         var tools = new WorkspaceTools(work);
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(3) };
         var client = new GeminiToolClient(http, key, model);
-        await RunGeminiTurnsAsync(context, ticket, tools, client, TurnCap(), cancellationToken);
+        await RunGeminiTurnsAsync(context, ticket, tools, client, model, TurnCap(), cancellationToken);
     }
 
     private async Task RunOpenAiCompatibleAsync(
@@ -145,7 +146,7 @@ public sealed class CodingAgentLoop
     }
 
     private static async Task RunGeminiTurnsAsync(
-        PipelineContext context, Ticket ticket, WorkspaceTools tools, GeminiToolClient client, int maxTurns, CancellationToken cancellationToken)
+        PipelineContext context, Ticket ticket, WorkspaceTools tools, GeminiToolClient client, string model, int maxTurns, CancellationToken cancellationToken)
     {
         var (system, user, intent) = Prompt(context, ticket, tools);
         var contents = new List<object>
@@ -154,10 +155,17 @@ public sealed class CodingAgentLoop
         };
 
         Console.WriteLine($"[agent] Starting coding loop ({intent}) provider=gemini");
+        LlmCallContext.CurrentRole = "coding";
+        LlmCallContext.CurrentTier = "cheap";
+        RunLog.Event(
+            "agent.started",
+            context,
+            fields: [("provider", "gemini"), ("model", model), ("maxTurns", maxTurns), ("intent", intent)]);
 
         for (var turn = 1; turn <= maxTurns; turn++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            RunLog.Event("agent.turn", context, fields: [("turn", turn), ("maxTurns", maxTurns)]);
             var reply = await client.GenerateAsync(system, contents, cancellationToken);
             var calls = reply.Parts.Where(p => p.IsFunction).ToList();
             var text = string.Join("\n", reply.Parts.Select(p => p.Text).Where(t => !string.IsNullOrWhiteSpace(t)));
@@ -214,7 +222,7 @@ public sealed class CodingAgentLoop
                     }
                 });
 
-                var result = Execute(tools, call.FunctionName!, call.FunctionArgs ?? "{}");
+                var result = Execute(context, tools, call.FunctionName!, call.FunctionArgs ?? "{}", turn);
                 if (call.FunctionName == "finish")
                 {
                     finished = true;
@@ -254,10 +262,17 @@ public sealed class CodingAgentLoop
         var (system, user, intent) = Prompt(context, ticket, tools);
         var messages = new List<object> { new { role = "user", content = user } };
         Console.WriteLine($"[agent] Starting coding loop ({intent}) provider={providerName} model={model}");
+        LlmCallContext.CurrentRole = "coding";
+        LlmCallContext.CurrentTier = "cheap";
+        RunLog.Event(
+            "agent.started",
+            context,
+            fields: [("provider", providerName), ("model", model), ("maxTurns", maxTurns), ("intent", intent)]);
 
         for (var turn = 1; turn <= maxTurns; turn++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            RunLog.Event("agent.turn", context, fields: [("turn", turn), ("maxTurns", maxTurns)]);
             var reply = await client.GenerateAsync(system, messages, cancellationToken);
             var calls = reply.Parts.Where(p => p.IsFunction).ToList();
             var text = string.Join("\n", reply.Parts.Select(p => p.Text).Where(t => !string.IsNullOrWhiteSpace(t)));
@@ -290,7 +305,7 @@ public sealed class CodingAgentLoop
                     type = "function",
                     function = new { name = call.FunctionName, arguments = call.FunctionArgs ?? "{}" }
                 });
-                var result = Execute(tools, call.FunctionName!, call.FunctionArgs ?? "{}");
+                var result = Execute(context, tools, call.FunctionName!, call.FunctionArgs ?? "{}", turn);
                 if (call.FunctionName == "finish")
                 {
                     finished = true;
@@ -314,6 +329,15 @@ public sealed class CodingAgentLoop
         context.ProductFilesChanged = tools.ProductChangeCount;
         context.ChangedRelativePaths.Clear();
         context.ChangedRelativePaths.AddRange(tools.ChangedRelativePaths);
+        RunLog.Event(
+            "agent.finished",
+            context,
+            fields:
+            [
+                ("files", context.ProductFilesChanged),
+                ("paths", string.Join(",", context.ChangedRelativePaths)),
+                ("finished", !string.IsNullOrWhiteSpace(context.AgentSummary))
+            ]);
         Console.WriteLine($"[agent] Product files changed: {context.ProductFilesChanged}");
         if (context.ProductFilesChanged == 0 && !context.DryRun)
         {
@@ -332,7 +356,7 @@ public sealed class CodingAgentLoop
         return "bug fix";
     }
 
-    private static string Execute(WorkspaceTools tools, string name, string argsJson)
+    private static string Execute(PipelineContext context, WorkspaceTools tools, string name, string argsJson, int turn)
     {
         RunBudget.Current?.AddToolCalls(1);
         using var args = JsonDocument.Parse(string.IsNullOrWhiteSpace(argsJson) ? "{}" : argsJson);
@@ -344,12 +368,18 @@ public sealed class CodingAgentLoop
             return e.ValueKind == JsonValueKind.String ? e.GetString() ?? "" : e.GetRawText();
         }
 
+        var path = S("path");
+        RunLog.Event(
+            "agent.tool",
+            context,
+            fields: [("tool", name), ("path", path), ("turn", turn), ("toolCalls", context.Spend.ToolCalls)]);
+
         return name switch
         {
-            "list_files" => tools.ListFiles(S("path")),
-            "read_file" => tools.ReadFile(S("path")),
-            "write_file" => tools.WriteFile(S("path"), S("content")),
-            "grep" => tools.Grep(S("pattern"), S("path")),
+            "list_files" => tools.ListFiles(path),
+            "read_file" => tools.ReadFile(path),
+            "write_file" => tools.WriteFile(path, S("content")),
+            "grep" => tools.Grep(S("pattern"), path),
             "finish" => S("summary"),
             _ => $"Unknown tool {name}"
         };

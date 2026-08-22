@@ -394,6 +394,10 @@ public sealed class CommitAndOpenPrStep(IRepoHost repoHost) : IPipelineStep
         }, cancellationToken);
 
         Console.WriteLine($"[{Name}] PR → {context.PullRequest.Url}");
+        AutoCoder.Core.Logging.RunLog.Event(
+            "pr.opened",
+            context,
+            fields: [("url", context.PullRequest.Url), ("branch", branch)]);
     }
 }
 
