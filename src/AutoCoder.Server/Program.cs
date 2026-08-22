@@ -80,14 +80,35 @@ app.MapGet("/api/ui/models", async (HttpRequest request, HttpResponse response, 
 {
     if (!DashboardAuth.IsAllowed(request))
         return Results.Json(new { error = "dashboard locked" }, statusCode: 401);
-    var catalog = await ModelCatalog.ListAsync(ct);
+
+    // Roles/budget must always return so the dropdown shell renders even if a provider /models call hangs.
+    IReadOnlyList<CatalogProvider> catalog;
+    try
+    {
+        catalog = await ModelCatalog.ListAsync(ct);
+    }
+    catch (Exception ex)
+    {
+        catalog =
+        [
+            new CatalogProvider("deepseek", [], ex.Message),
+            new CatalogProvider("groq", [], "list failed"),
+            new CatalogProvider("openai", [], "list failed"),
+            new CatalogProvider("anthropic", [], "list failed"),
+            new CatalogProvider("gemini", [], "list failed")
+        ];
+    }
+
     var budget = LlmDailyBudget.Snapshot();
+    var roles = ModelCatalog.Effective(opts);
+    // Ensure the currently selected model is always an option, even if the live list omitted it.
+    catalog = ModelCatalog.EnsureCurrentOptions(catalog, roles);
     return Results.Ok(new
     {
         appliesTo = "next run",
         budget = new { used = budget.Used, cap = budget.Cap },
         providers = catalog,
-        roles = ModelCatalog.Effective(opts)
+        roles
     });
 });
 

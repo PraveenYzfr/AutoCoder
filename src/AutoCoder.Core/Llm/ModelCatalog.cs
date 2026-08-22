@@ -12,8 +12,8 @@ public static class ModelCatalog
 {
     private static readonly string[] Unusable =
     [
-        "whisper", "tts", "orpheus", "prompt-guard", "guard", "embed", "embedding",
-        "dall-e", "dalle", "image", "moderation", "transcri", "audio", "speech",
+        "whisper", "tts-", "-tts", "orpheus", "prompt-guard", "embed", "embedding",
+        "dall-e", "dalle", "moderation", "transcri", "speech-to", "text-to-speech",
         "rerank", "classifier", "vision-exp"
     ];
 
@@ -30,12 +30,32 @@ public static class ModelCatalog
                 return _cache;
         }
 
-        var results = await Task.WhenAll(
-            FetchOpenAi("deepseek", "DEEPSEEK_API_KEY", "https://api.deepseek.com/models", cancellationToken),
-            FetchOpenAi("groq", "GROQ_API_KEY", "https://api.groq.com/openai/v1/models", cancellationToken),
-            FetchOpenAi("openai", "OPENAI_API_KEY", "https://api.openai.com/v1/models", cancellationToken),
-            FetchAnthropic(cancellationToken),
-            FetchGemini(cancellationToken));
+        // Cap total wait — UI must not hang behind Cloudflare if a provider is slow.
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        linked.CancelAfter(TimeSpan.FromSeconds(12));
+        var ct = linked.Token;
+
+        CatalogProvider[] results;
+        try
+        {
+            results = await Task.WhenAll(
+                FetchOpenAi("deepseek", "DEEPSEEK_API_KEY", "https://api.deepseek.com/models", ct),
+                FetchOpenAi("groq", "GROQ_API_KEY", "https://api.groq.com/openai/v1/models", ct),
+                FetchOpenAi("openai", "OPENAI_API_KEY", "https://api.openai.com/v1/models", ct),
+                FetchAnthropic(ct),
+                FetchGemini(ct));
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            results =
+            [
+                new CatalogProvider("deepseek", [], "timed out"),
+                new CatalogProvider("groq", [], "timed out"),
+                new CatalogProvider("openai", [], "timed out"),
+                new CatalogProvider("anthropic", [], "timed out"),
+                new CatalogProvider("gemini", [], "timed out")
+            ];
+        }
 
         lock (Gate)
         {
@@ -47,8 +67,34 @@ public static class ModelCatalog
 
     public static bool IsKnown(IReadOnlyList<CatalogProvider> catalog, string provider, string model) =>
         catalog.Any(p => p.Name.Equals(provider, StringComparison.OrdinalIgnoreCase)
-                         && p.Error is null
                          && p.Models.Any(m => m.Id.Equals(model, StringComparison.OrdinalIgnoreCase)));
+
+    /// <summary>Keep the active config/override model selectable even when /models is empty or filtered.</summary>
+    public static IReadOnlyList<CatalogProvider> EnsureCurrentOptions(
+        IReadOnlyList<CatalogProvider> catalog,
+        IReadOnlyList<RoleEffective> roles)
+    {
+        var byName = catalog.ToDictionary(p => p.Name, StringComparer.OrdinalIgnoreCase);
+        foreach (var role in roles)
+        {
+            if (!byName.TryGetValue(role.Provider, out var existing))
+            {
+                byName[role.Provider] = new CatalogProvider(role.Provider, [new CatalogModel(role.Model)], null);
+                continue;
+            }
+
+            if (existing.Models.Any(m => m.Id.Equals(role.Model, StringComparison.OrdinalIgnoreCase)))
+                continue;
+
+            var models = existing.Models.ToList();
+            models.Insert(0, new CatalogModel(role.Model));
+            byName[role.Provider] = existing with { Models = models, Error = null };
+        }
+
+        return ModelOverrideStore.Providers
+            .Select(name => byName.TryGetValue(name, out var p) ? p : new CatalogProvider(name, [], "no API key"))
+            .ToList();
+    }
 
     public static IReadOnlyList<RoleEffective> Effective(AutoCoderOptions options)
     {

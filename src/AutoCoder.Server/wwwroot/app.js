@@ -29,10 +29,18 @@ function ago(iso) {
 }
 
 async function listPage() {
-  const routing = await api("/api/ui/routing");
-  document.getElementById("routing").textContent =
-    `Scout/summarize: ${routing.cheap} · Plan: ${routing.costly} · Code: ${routing.coding}`;
-  await drawPickers();
+  try {
+    const routing = await api("/api/ui/routing");
+    document.getElementById("routing").textContent =
+      `Scout/summarize: ${routing.cheap} · Plan: ${routing.costly} · Code: ${routing.coding}`;
+  } catch (e) {
+    document.getElementById("routing").textContent = `Routing unavailable: ${e.message || e}`;
+  }
+  // Pickers must not block the run list if /api/ui/models fails.
+  drawPickers().catch(e => {
+    const box = document.getElementById("pickerRows");
+    if (box) box.innerHTML = `<p class="sub">Model pickers failed to load: ${escapeHtml(String(e.message || e))}</p>`;
+  });
 
   const ticket = document.getElementById("ticket");
   const status = document.getElementById("status");
@@ -125,7 +133,14 @@ function escapeHtml(s) {
 async function drawPickers() {
   const box = document.getElementById("pickerRows");
   if (!box) return;
-  const data = await api("/api/ui/models");
+  box.innerHTML = `<p class="sub">Loading model lists…</p>`;
+  let data;
+  try {
+    data = await api("/api/ui/models");
+  } catch (e) {
+    box.innerHTML = `<p class="sub">Could not load <code>/api/ui/models</code>: ${escapeHtml(String(e.message || e))}</p>`;
+    throw e;
+  }
   const cap = data.budget?.cap;
   document.getElementById("budget").textContent = cap > 0
     ? `Daily LLM calls: ${data.budget.used} / ${cap}`
@@ -133,28 +148,39 @@ async function drawPickers() {
   document.getElementById("pickerNote").textContent =
     "Applies to the next run only. A run already in progress keeps its models.";
   const resetAll = document.getElementById("resetAll");
-  const hasOverride = (data.roles || []).some(r => r.source === "override");
+  const roles = data.roles || [];
+  const hasOverride = roles.some(r => r.source === "override");
   resetAll.hidden = !hasOverride;
   resetAll.onclick = async () => {
     await api("/api/ui/model-overrides", { method: "DELETE" });
     await drawPickers();
   };
-  box.innerHTML = (data.roles || []).map(role => {
+  if (roles.length === 0) {
+    box.innerHTML = `<p class="sub">No roles returned from the API.</p>`;
+    return;
+  }
+  box.innerHTML = roles.map(role => {
     const groups = (data.providers || []).map(p => {
-      if (p.error)
-        return `<optgroup label="${p.name} (unavailable: ${escapeHtml(p.error)})"></optgroup>`;
-      const opts = (p.models || []).map(m => {
+      const models = p.models || [];
+      const label = p.error && models.length === 0
+        ? `${p.name} (unavailable: ${p.error})`
+        : p.name;
+      if (models.length === 0)
+        return `<optgroup label="${escapeHtml(label)}"></optgroup>`;
+      const opts = models.map(m => {
         const sel = p.name === role.provider && m.id === role.model ? " selected" : "";
-        return `<option value="${p.name}::${escapeHtml(m.id)}"${sel}>${p.name} / ${escapeHtml(m.id)}</option>`;
+        return `<option value="${escapeHtml(p.name)}::${escapeHtml(m.id)}"${sel}>${escapeHtml(p.name)} / ${escapeHtml(m.id)}</option>`;
       }).join("");
-      return `<optgroup label="${p.name}">${opts}</optgroup>`;
+      return `<optgroup label="${escapeHtml(label)}">${opts}</optgroup>`;
     }).join("");
+    // Always include current selection at the top if the optgroups somehow omitted it.
+    const current = `<option value="${escapeHtml(role.provider)}::${escapeHtml(role.model)}" selected>${escapeHtml(role.provider)} / ${escapeHtml(role.model)} (current)</option>`;
     const reset = role.source === "override"
-      ? `<button type="button" data-reset="${role.role}">Reset</button>`
+      ? `<button type="button" data-reset="${escapeHtml(role.role)}">Reset</button>`
       : "";
     return `<div class="picker-row">
-      <label>${role.role}<span class="sub"> ${role.source}</span></label>
-      <select data-role="${role.role}">${groups}</select>
+      <label>${escapeHtml(role.role)}<span class="sub"> ${escapeHtml(role.source)}</span></label>
+      <select data-role="${escapeHtml(role.role)}">${current}${groups}</select>
       ${reset}
     </div>`;
   }).join("");
