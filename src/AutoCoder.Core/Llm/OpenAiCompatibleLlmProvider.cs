@@ -3,7 +3,9 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AutoCoder.Abstractions;
+using AutoCoder.Core.Logging;
 using AutoCoder.Core.Resilience;
+using Microsoft.Extensions.Logging;
 
 namespace AutoCoder.Core.Llm;
 
@@ -64,7 +66,6 @@ public sealed class OpenAiCompatibleLlmProvider : ILlmProvider, IDisposable
         {
             ["model"] = model,
             ["messages"] = messages,
-            ["temperature"] = 0.2,
             ["max_tokens"] = request.MaxTokens ?? 2048
         };
         if (_providerName.Equals("deepseek", StringComparison.OrdinalIgnoreCase))
@@ -77,6 +78,10 @@ public sealed class OpenAiCompatibleLlmProvider : ILlmProvider, IDisposable
             if (think && request.MaxTokens is null)
                 payload["max_tokens"] = 8192;
         }
+        else
+        {
+            payload["temperature"] = 0.2;
+        }
 
         var url = $"{_baseUrl}/chat/completions";
         using var response = await TransientRetry.SendAsync(
@@ -86,8 +91,22 @@ public sealed class OpenAiCompatibleLlmProvider : ILlmProvider, IDisposable
         var raw = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            throw new InvalidOperationException(
-                $"{_providerName} error {(int)response.StatusCode}: {Truncate(raw, 800)}");
+            var err = $"{_providerName} error {(int)response.StatusCode}: {Truncate(raw, 800)}";
+            if (LlmUsage.Current?.Context is { } ctx)
+            {
+                RunLog.Event(
+                    "llm.error",
+                    ctx,
+                    LogLevel.Error,
+                    fields:
+                    [
+                        ("role", request.ModelRole),
+                        ("provider", _providerName),
+                        ("model", model),
+                        ("error", err)
+                    ]);
+            }
+            throw new InvalidOperationException(err);
         }
 
         using var doc = JsonDocument.Parse(raw);

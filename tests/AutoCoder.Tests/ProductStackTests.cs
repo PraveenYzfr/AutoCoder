@@ -34,6 +34,15 @@ public sealed class ProductStackTests : IDisposable
     }
 
     [Fact]
+    public void Treats_npm_init_stub_as_no_test_script()
+    {
+        File.WriteAllText(Path.Combine(_work, "package.json"), """
+            { "scripts": { "test": "echo \"Error: no test specified\" && exit 1" } }
+            """);
+        Assert.False(ProductStack.HasNpmTestScript(_work));
+    }
+
+    [Fact]
     public void Ignores_package_json_under_node_modules()
     {
         var nested = Path.Combine(_work, "node_modules", "left-pad");

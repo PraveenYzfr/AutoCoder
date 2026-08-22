@@ -15,14 +15,15 @@ public static class TicketRunLease
 
         if (File.Exists(path))
         {
-            var age = DateTime.UtcNow - File.GetLastWriteTimeUtc(path);
-            if (age < TimeSpan.FromMinutes(45))
+            var written = File.GetLastWriteTimeUtc(path);
+            var until = written.AddMinutes(45);
+            if (DateTime.UtcNow < until)
             {
-                skipReason = $"Ticket {ticketKey} already has a run from {age.TotalMinutes:F0}m ago.";
+                skipReason = $"{ticketKey} skipped, lease held until {until:HH:mm} UTC";
                 RunLog.Event(
                     "lease.skipped",
                     level: Microsoft.Extensions.Logging.LogLevel.Warning,
-                    fields: [("ticket", ticketKey), ("ageMinutes", age.TotalMinutes)]);
+                    fields: [("ticket", ticketKey), ("untilUtc", until.ToString("O"))]);
                 return false;
             }
         }
@@ -37,6 +38,21 @@ public static class TicketRunLease
         var path = Path.Combine(artifactsDirectory, "leases", $"{Sanitize(ticketKey)}.lease");
         if (File.Exists(path))
             File.SetLastWriteTimeUtc(path, DateTime.UtcNow);
+    }
+
+    public static void Release(string artifactsDirectory, string ticketKey)
+    {
+        var path = Path.Combine(artifactsDirectory, "leases", $"{Sanitize(ticketKey)}.lease");
+        try
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+            RunLog.Event("lease.released", fields: ("ticket", ticketKey));
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[lease] Release {ticketKey} failed: {ex.Message}");
+        }
     }
 
     private static string Sanitize(string ticketKey) =>

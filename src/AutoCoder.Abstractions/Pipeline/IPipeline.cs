@@ -58,6 +58,8 @@ public sealed class PipelineContext
     public int ProductFilesChanged { get; set; }
     public bool BuildSucceeded { get; set; }
     public bool TestsSucceeded { get; set; }
+    public bool TestsSkipped { get; set; }
+    public string? TestSkipReason { get; set; }
     public string? AgentSummary { get; set; }
     public List<string> ChangedRelativePaths { get; } = [];
     public RunSpend Spend { get; } = new();

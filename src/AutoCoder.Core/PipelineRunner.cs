@@ -52,6 +52,7 @@ public sealed class PipelineRunner
                     LogLevel.Error,
                     ex,
                     ("step", step.Name),
+                    ("error", ex.Message),
                     ("ms", (DateTime.UtcNow - started).TotalMilliseconds));
 
                 if (step.Name != "WritebackTicket")
@@ -59,10 +60,15 @@ public sealed class PipelineRunner
                     var writeback = pipeline.Steps.FirstOrDefault(s => s.Name == "WritebackTicket");
                     if (writeback is not null)
                     {
-                        try { await writeback.ExecuteAsync(context, cancellationToken); }
+                        try
+                        {
+                            await writeback.ExecuteAsync(context, cancellationToken);
+                            RunLog.Event("step.succeeded", context, fields: [("step", writeback.Name), ("ms", 0)]);
+                        }
                         catch (Exception wb)
                         {
-                            RunLog.Event("writeback.failed", context, LogLevel.Error, wb, ("afterStep", step.Name));
+                            RunLog.Event("writeback.failed", context, LogLevel.Error, wb,
+                                ("afterStep", step.Name), ("error", wb.Message));
                         }
                     }
                 }
@@ -71,10 +77,13 @@ public sealed class PipelineRunner
                 {
                     var persist = pipeline.Steps.FirstOrDefault(s => s.Name == "PersistRunResult");
                     if (persist is not null)
+                    {
                         await persist.ExecuteAsync(context, cancellationToken);
+                        RunLog.Event("step.succeeded", context, fields: [("step", persist.Name), ("ms", 0)]);
+                    }
                 }
 
-                RunLog.Event("run.failed", context, LogLevel.Error, ex, ("step", step.Name));
+                RunLog.Event("run.failed", context, LogLevel.Error, ex, ("step", step.Name), ("error", ex.Message));
                 throw;
             }
         }

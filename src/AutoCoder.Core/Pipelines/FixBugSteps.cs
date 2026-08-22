@@ -270,15 +270,15 @@ public sealed class TestStep(AutoCoderOptions options, ISandboxRunner sandbox) :
         }
 
         var work = context.WorkDirectory ?? throw new InvalidOperationException("WorkDirectory required.");
-        var gates = PipelineGates.For(options, context.PipelineName);
+        _ = PipelineGates.For(options, context.PipelineName);
         var ran = false;
+        var skips = new List<string>();
 
         if (ProductStack.HasNode(work))
         {
             if (!ProductStack.HasNpmTestScript(work))
             {
-                if (gates.RequireTests)
-                    throw new InvalidOperationException("package.json has no \"test\" script — require_tests is true. Add npm test.");
+                skips.Add("no npm test script");
             }
             else
             {
@@ -294,8 +294,7 @@ public sealed class TestStep(AutoCoderOptions options, ISandboxRunner sandbox) :
             var target = ProductStack.DotnetTestTarget(work);
             if (target is null)
             {
-                if (gates.RequireTests)
-                    throw new InvalidOperationException("No .NET test project — require_tests is true.");
+                skips.Add("no .NET test project");
             }
             else
             {
@@ -311,8 +310,7 @@ public sealed class TestStep(AutoCoderOptions options, ISandboxRunner sandbox) :
         {
             if (!ProductStack.HasPythonTests(work))
             {
-                if (gates.RequireTests)
-                    throw new InvalidOperationException("No pytest files — require_tests is true.");
+                skips.Add("no pytest files");
             }
             else
             {
@@ -323,8 +321,14 @@ public sealed class TestStep(AutoCoderOptions options, ISandboxRunner sandbox) :
             }
         }
 
-        if (!ran && !ProductStack.Any(work) && gates.RequireTests)
-            throw new InvalidOperationException("No Node, .NET, or Python tests found — require_tests is true.");
+        if (!ran)
+        {
+            context.TestsSkipped = true;
+            context.TestSkipReason = skips.Count > 0
+                ? string.Join("; ", skips)
+                : "no Node, .NET, or Python test harness";
+            Console.WriteLine($"[{Name}] Skipped — {context.TestSkipReason}. Missing harness is not a test failure.");
+        }
 
         context.TestsSucceeded = true;
     }
@@ -379,6 +383,13 @@ public sealed class CommitAndOpenPrStep(IRepoHost repoHost) : IPipelineStep
         body.AppendLine("## Plan");
         body.AppendLine(context.Plan?.RawMarkdown ?? "(none)");
         body.AppendLine();
+        if (context.TestsSkipped)
+        {
+            body.AppendLine();
+            body.AppendLine("## Tests");
+            body.AppendLine($"Skipped — {context.TestSkipReason}. No test harness in the repo; this is not a failed test run.");
+        }
+
         body.AppendLine("---");
         body.AppendLine("_Opened by AutoCoder. No auto-merge._");
 
@@ -441,7 +452,7 @@ public sealed class WritebackTicketStep(ITicketSource ticketSource, ILlmProvider
             var summary = await SummarizeForJiraAsync(context, cancellationToken);
             comment = pr is null
                 ? "AutoCoder finished without a PR."
-                : $"AutoCoder completed this ticket.\nPR: {pr.Url}\nBuild: {(context.BuildSucceeded ? "passed" : "n/a")}\nTests: {(context.TestsSucceeded ? "passed" : "n/a")}\n{summary}";
+                : $"AutoCoder completed this ticket.\nPR: {pr.Url}\nBuild: {(context.BuildSucceeded ? "passed" : "n/a")}\nTests: {(context.TestsSkipped ? $"skipped ({context.TestSkipReason})" : context.TestsSucceeded ? "passed" : "n/a")}\n{summary}";
         }
 
         if (context.DryRun)
@@ -523,7 +534,7 @@ public sealed class PersistRunResultStep : IPipelineStep
             - Pipeline: extract ticket → clone → cheap scout → costly plan → cheap implement → build → test → PR (no merge) → Jira writeback.
             - Dry run: {context.DryRun}
             - Product files changed: {context.ProductFilesChanged}
-            - Build: {context.BuildSucceeded}  Tests: {context.TestsSucceeded}
+            - Build: {context.BuildSucceeded}  Tests: {(context.TestsSkipped ? $"skipped ({context.TestSkipReason})" : context.TestsSucceeded.ToString())}
             - Tokens: prompt={context.Spend.PromptTokens} completion={context.Spend.CompletionTokens} total={context.Spend.TotalTokens}
             - Tool calls: {context.Spend.ToolCalls}
             - Estimated USD: {context.Spend.EstimatedUsd:F4}

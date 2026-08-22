@@ -35,9 +35,14 @@ internal static class ProductStack
             if (!doc.RootElement.TryGetProperty("scripts", out var scripts)
                 || scripts.ValueKind != JsonValueKind.Object)
                 return false;
-            return scripts.TryGetProperty("test", out var test)
-                   && test.ValueKind == JsonValueKind.String
-                   && !string.IsNullOrWhiteSpace(test.GetString());
+            if (!scripts.TryGetProperty("test", out var test)
+                || test.ValueKind != JsonValueKind.String)
+                return false;
+            var cmd = test.GetString() ?? "";
+            if (string.IsNullOrWhiteSpace(cmd))
+                return false;
+            // npm init stub: "echo \"Error: no test specified\" && exit 1"
+            return !cmd.Contains("no test specified", StringComparison.OrdinalIgnoreCase);
         }
         catch
         {

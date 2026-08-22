@@ -77,8 +77,12 @@ public sealed class JiraPoller : BackgroundService
                 continue;
             }
 
-            Console.WriteLine($"[poll] Dispatch {ticket.Key}");
-            await _dispatcher.DispatchAsync(ticket, decision.Project, decision.ProjectName, cancellationToken);
+            var outcome = await _dispatcher.DispatchAsync(ticket, decision.Project, decision.ProjectName, cancellationToken);
+            if (outcome.Contains("skipped", StringComparison.OrdinalIgnoreCase)
+                || outcome.Contains("lease held", StringComparison.OrdinalIgnoreCase))
+                Console.WriteLine($"[poll] {outcome}");
+            else
+                Console.WriteLine($"[poll] Dispatch {ticket.Key} → {outcome}");
         }
     }
 }

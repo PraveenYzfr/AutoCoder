@@ -141,40 +141,47 @@ public sealed class WebhookRunDispatcher
         if (acquireLease && !TicketRunLease.TryAcquire(artifacts, ticket.Key, out var skip))
         {
             Console.WriteLine($"[lease] Skip {ticket.Key}: {skip}");
-            return $"skipped:{ticket.Key}";
+            return skip ?? $"skipped:{ticket.Key}";
         }
 
         runId ??= PipelineRunner.NewRunId(ticket.Key.ToLowerInvariant());
-        await AcknowledgeRunningAsync(ticket, resolved, dryRun, cancellationToken);
-
-        ITicketSource ticketSource = CompositeTicketSource.WithJiraWriteback(
-            new InMemoryTicketSource(ticket),
-            resolved.JiraBaseUrl,
-            live: !dryRun);
-        ILlmProvider llm = LlmProviderFactory.Create(_options, project.Agent);
-        var (sandbox, repoHost, gate) = LiveAdapterFactory.Create(_options, dryRun, autoApprove: true);
-
-        var pipeline = new FixBugPipeline(_options, ticketSource, llm, gate, sandbox, repoHost);
-        var context = new PipelineContext
+        try
         {
-            RunId = runId,
-            PipelineName = pipeline.Name,
-            DryRun = dryRun,
-            ArtifactsDirectory = artifacts,
-            ProjectName = resolved.ProjectName,
-            RepoUrl = resolved.Repo.Url,
-            BaseBranch = string.IsNullOrWhiteSpace(resolved.Repo.DefaultBranch) ? "main" : resolved.Repo.DefaultBranch,
-            JiraBaseUrl = resolved.JiraBaseUrl,
-            TicketBrowseUrl = ProjectCatalog.BrowseUrl(resolved.JiraBaseUrl, ticket.Key),
-            Items =
-            {
-                ["ticketKey"] = "from-webhook",
-                ["projectName"] = resolved.ProjectName
-            }
-        };
+            await AcknowledgeRunningAsync(ticket, resolved, dryRun, cancellationToken);
 
-        await new PipelineRunner().RunAsync(pipeline, context, _options, cancellationToken);
-        return runId;
+            ITicketSource ticketSource = CompositeTicketSource.WithJiraWriteback(
+                new InMemoryTicketSource(ticket),
+                resolved.JiraBaseUrl,
+                live: !dryRun);
+            ILlmProvider llm = LlmProviderFactory.Create(_options, project.Agent);
+            var (sandbox, repoHost, gate) = LiveAdapterFactory.Create(_options, dryRun, autoApprove: true);
+
+            var pipeline = new FixBugPipeline(_options, ticketSource, llm, gate, sandbox, repoHost);
+            var context = new PipelineContext
+            {
+                RunId = runId,
+                PipelineName = pipeline.Name,
+                DryRun = dryRun,
+                ArtifactsDirectory = artifacts,
+                ProjectName = resolved.ProjectName,
+                RepoUrl = resolved.Repo.Url,
+                BaseBranch = string.IsNullOrWhiteSpace(resolved.Repo.DefaultBranch) ? "main" : resolved.Repo.DefaultBranch,
+                JiraBaseUrl = resolved.JiraBaseUrl,
+                TicketBrowseUrl = ProjectCatalog.BrowseUrl(resolved.JiraBaseUrl, ticket.Key),
+                Items =
+                {
+                    ["ticketKey"] = "from-webhook",
+                    ["projectName"] = resolved.ProjectName
+                }
+            };
+
+            await new PipelineRunner().RunAsync(pipeline, context, _options, cancellationToken);
+            return runId;
+        }
+        finally
+        {
+            TicketRunLease.Release(artifacts, ticket.Key);
+        }
     }
 
     private async Task AcknowledgeRunningAsync(

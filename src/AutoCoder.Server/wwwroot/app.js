@@ -48,11 +48,14 @@ async function listPage() {
         const pr = r.prUrl
           ? `<a class="pr-link" href="${r.prUrl}" target="_blank" rel="noopener">Open PR</a>`
           : `<span class="sub">${r.status === "failed" ? "No PR — failed" : "PR not opened yet"}</span>`;
+        const err = r.error
+          ? `<div class="sub" title="${escapeHtml(r.error)}">${escapeHtml(r.error.length > 140 ? r.error.slice(0, 140) + "…" : r.error)}</div>`
+          : "";
         const dots = (r.journey || []).map(j =>
           `<span class="dot ${j.state}" title="${j.label}: ${j.state}"></span>`).join("");
         return `<tr>
           <td data-label="Ticket"><a href="/runs/${encodeURIComponent(r.runId)}">${r.ticket || r.runId}</a><div class="sub">${ago(r.startedUtc)}</div></td>
-          <td data-label="Now">${badge(r.status)} <div class="sub">${r.nowLabel || r.lastStep || "—"}</div></td>
+          <td data-label="Now">${badge(r.status)} <div class="sub">${r.nowLabel || r.lastStep || "—"}</div>${err}</td>
           <td data-label="Progress"><div class="mini-journey">${dots}</div></td>
           <td data-label="Pull request">${pr}</td>
         </tr>`;
@@ -99,6 +102,7 @@ async function detailPage() {
     document.getElementById("outcome").innerHTML = `
       ${r.prUrl ? `<p>PR: <a href="${r.prUrl}">${r.prUrl}</a></p>` : "<p>No PR yet.</p>"}
       ${r.failedStep ? `<p>Failed at <strong>${r.failedStep}</strong></p>` : ""}
+      ${r.error ? `<pre class="md">${escapeHtml(r.error)}</pre>` : ""}
       ${r.result ? `<pre class="md">${escapeHtml(r.result)}</pre>` : ""}`;
     document.getElementById("brief").textContent = r.ticketBrief || "(none yet)";
     document.getElementById("scout").textContent = r.scout || "(none yet)";

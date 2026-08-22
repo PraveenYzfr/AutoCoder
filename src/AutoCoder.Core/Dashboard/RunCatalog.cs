@@ -151,6 +151,10 @@ public static class RunCatalog
         var agentStarted = events.LastOrDefault(e => Str(e, "event") == "agent.started");
 
         var resultMd = ReadOptional(dir, "result.md");
+        var error = First(events, "step.failed", "error")
+                    ?? First(events, "run.failed", "error")
+                    ?? First(events, "llm.error", "error")
+                    ?? ExtractMdLine(resultMd, "Failure:");
         var pr = First(events, "pr.opened", "url") ?? ExtractMd(resultMd, "PR:");
         var journey = BuildJourney(stages, pr);
 
@@ -167,6 +171,7 @@ public static class RunCatalog
                 ? (e - s).TotalMilliseconds
                 : null,
             FailedStep = failedStep,
+            Error = error is "n/a" ? null : error,
             LastStep = stages.LastOrDefault(st => st.State is "done" or "running" or "failed")?.Name,
             PrUrl = pr,
             Tokens = (int?)Num(last, "tokens") ?? 0,
@@ -288,6 +293,15 @@ public static class RunCatalog
         var v = m.Success ? m.Groups[1].Value.Trim('`', '"') : null;
         return string.IsNullOrWhiteSpace(v) || v is "n/a" ? null : v;
     }
+
+    private static string? ExtractMdLine(string? md, string label)
+    {
+        if (string.IsNullOrWhiteSpace(md))
+            return null;
+        var m = Regex.Match(md, $@"{Regex.Escape(label)}\s*(.+)$", RegexOptions.Multiline);
+        var v = m.Success ? m.Groups[1].Value.Trim('`', '"', ' ') : null;
+        return string.IsNullOrWhiteSpace(v) || v is "n/a" ? null : v;
+    }
 }
 
 public sealed record StageState(string Name, string State, double? DurationMs);
@@ -312,6 +326,7 @@ public sealed class RunSummary
     public DateTime? StartedUtc { get; init; }
     public double? DurationMs { get; init; }
     public string? FailedStep { get; init; }
+    public string? Error { get; init; }
     public string? LastStep { get; init; }
     public string? PrUrl { get; init; }
     public int Tokens { get; init; }
@@ -335,6 +350,7 @@ public sealed class RunDetail
     public DateTime? EndedUtc { get; init; }
     public double? DurationMs { get; init; }
     public string? FailedStep { get; init; }
+    public string? Error { get; init; }
     public string? LastStep { get; init; }
     public string? PrUrl { get; init; }
     public int Tokens { get; init; }
@@ -361,6 +377,7 @@ public sealed class RunDetail
         StartedUtc = StartedUtc,
         DurationMs = DurationMs,
         FailedStep = FailedStep,
+        Error = Error,
         LastStep = LastStep,
         PrUrl = PrUrl,
         Tokens = Tokens,

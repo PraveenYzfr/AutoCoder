@@ -17,7 +17,7 @@ public sealed class TicketRunLeaseTests : IDisposable
     {
         Assert.True(TicketRunLease.TryAcquire(_dir, "AC-1", out _));
         Assert.False(TicketRunLease.TryAcquire(_dir, "AC-1", out var skip));
-        Assert.Contains("already has a run", skip);
+        Assert.Contains("lease held until", skip);
     }
 
     [Fact]
@@ -34,6 +34,14 @@ public sealed class TicketRunLeaseTests : IDisposable
         var path = Path.Combine(_dir, "leases", "AC-9.lease");
         File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddMinutes(-46));
         Assert.True(TicketRunLease.TryAcquire(_dir, "AC-9", out _));
+    }
+
+    [Fact]
+    public void Release_allows_reacquire()
+    {
+        Assert.True(TicketRunLease.TryAcquire(_dir, "SCRUM-7", out _));
+        TicketRunLease.Release(_dir, "SCRUM-7");
+        Assert.True(TicketRunLease.TryAcquire(_dir, "SCRUM-7", out _));
     }
 
     public void Dispose()

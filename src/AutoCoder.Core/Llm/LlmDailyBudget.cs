@@ -1,3 +1,5 @@
+using AutoCoder.Core.Runs;
+
 namespace AutoCoder.Core.Llm;
 
 /// <summary>
@@ -9,13 +11,14 @@ public static class LlmDailyBudget
     public static void Consume(int calls = 1)
     {
         var raw = Environment.GetEnvironmentVariable("AUTOCODER_LLM_DAILY_CALL_BUDGET");
-        var cap = 20;
+        // 0 = unlimited. A real ticket uses scout + plan + many coding turns; 20 was a Gemini leftover.
+        var cap = 0;
         if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out var parsed))
             cap = parsed;
         if (cap <= 0)
             return;
 
-        var dir = Path.Combine("runs", "llm-budget");
+        var dir = Path.Combine(RunWorkspace.AppRoot(), "llm-budget");
         Directory.CreateDirectory(dir);
         var path = Path.Combine(dir, $"{DateTime.UtcNow:yyyy-MM-dd}.txt");
         var used = 0;

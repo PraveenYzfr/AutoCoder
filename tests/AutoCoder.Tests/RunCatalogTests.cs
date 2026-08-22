@@ -65,6 +65,24 @@ public sealed class RunCatalogTests : IDisposable
     }
 
     [Fact]
+    public void Surfaces_failure_error_from_log_and_result()
+    {
+        var dir = Path.Combine(_root, "fail-run");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "run.log"), """
+            {"ts":"2026-08-22T17:00:00Z","event":"run.started","runId":"fail-run","ticket":"SCRUM-7"}
+            {"ts":"2026-08-22T17:00:01Z","event":"step.failed","step":"GeneratePlan","error":"deepseek error 400: temperature rejected"}
+            {"ts":"2026-08-22T17:00:02Z","event":"run.failed","step":"GeneratePlan","error":"deepseek error 400: temperature rejected"}
+            """);
+        File.WriteAllText(Path.Combine(dir, "result.md"), "- Failure: deepseek error 400: temperature rejected\n");
+
+        var detail = RunCatalog.Get(_root, "fail-run");
+        Assert.Equal("GeneratePlan", detail!.FailedStep);
+        Assert.Contains("temperature rejected", detail.Error);
+        Assert.Contains("temperature rejected", RunCatalog.List(_root).Single(s => s.RunId == "fail-run").Error);
+    }
+
+    [Fact]
     public void Half_written_run_is_running_not_an_error()
     {
         var dir = Path.Combine(_root, "live");
