@@ -111,8 +111,10 @@ public sealed class CodingAgentLoop
             You MUST implement the approved plan by editing application source. Do not only write markdown.
             Follow the plan's file paths. Re-read files before writing. Do not invent a different approach
             unless a planned path does not exist.
+            If the ticket updates existing UI copy (heading/list on a page), grep for that text and edit the
+            HTML/JS file that contains it — do not recreate the same content in README.md.
             Workspace is a git checkout. Paths are relative to the repo root.
-            Never run shell. Never write under .git.
+            Never run shell. Never write under .git or .autocoder/.
             Use list_files, grep, read_file to understand the repo, then write_file with complete file contents.
             Add or update tests when the repo has a test project.
             When the change is complete, call finish.
@@ -343,6 +345,15 @@ public sealed class CodingAgentLoop
         {
             throw new InvalidOperationException(
                 "Agent did not change any product source files. Refusing to open a PR.");
+        }
+
+        var product = context.ChangedRelativePaths.Where(WorkspacePaths.IsProductFile).ToList();
+        if (!context.DryRun
+            && product.Count > 0
+            && product.All(p => p.EndsWith(".md", StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidOperationException(
+                "Agent only changed markdown (.md). Expected application source (HTML/JS/CSS/…). Refusing PR.");
         }
     }
 

@@ -78,6 +78,9 @@ internal sealed class WorkspaceTools
         var rel = WorkspacePaths.Relativize(_work, full);
         if (rel.StartsWith(".git", StringComparison.OrdinalIgnoreCase))
             return "Refusing to write under .git";
+        if (rel.StartsWith(".autocoder", StringComparison.OrdinalIgnoreCase)
+            || rel.Contains("/.autocoder/", StringComparison.OrdinalIgnoreCase))
+            return "Refusing to write under .autocoder (AutoCoder internals, not product code).";
 
         Directory.CreateDirectory(Path.GetDirectoryName(full)!);
         File.WriteAllText(full, content ?? "", Encoding.UTF8);

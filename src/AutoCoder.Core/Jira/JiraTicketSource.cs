@@ -268,7 +268,8 @@ public sealed class JiraTicketSource : ITicketSource, IDisposable
             return "";
         if (desc.ValueKind == JsonValueKind.String)
             return desc.GetString() ?? "";
-        return desc.GetRawText();
+        // Jira Cloud returns Atlassian Document Format (ADF), not plain text.
+        return JiraAdf.ToPlainText(desc);
     }
 
     private static string Truncate(string text, int max) =>

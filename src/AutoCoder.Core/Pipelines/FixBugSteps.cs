@@ -85,6 +85,12 @@ public sealed class GeneratePlanStep(ILlmProvider llm) : IPipelineStep
                         Produce a concise implementation plan using ONLY real paths from the scout.
                         Name the tech stack, files to edit, tests to add/update, and risks.
                         Do not invent files or frameworks that the scout did not mention.
+
+                        If the ticket says to update existing UI copy (a heading, list, or section on a page),
+                        plan edits to the HTML/JS/CSS file that already contains that text — usually under
+                        public/ or similar. Do NOT dump the same wording into README.md unless the ticket
+                        explicitly asks for documentation.
+                        Prefer product source over markdown. Never plan writes under .autocoder/.
                         """
                 },
                 new LlmMessage { Role = "user", Content = prompt }

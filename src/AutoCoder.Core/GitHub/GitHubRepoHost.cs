@@ -95,6 +95,8 @@ public sealed class GitHubRepoHost : IRepoHost, IDisposable
             ?? throw new InvalidOperationException("CommitAsync requires WorkDirectory for live GitHub host.");
 
         await GitAsync(work, ["add", "-A"], cancellationToken);
+        // Never ship AutoCoder's own run artifacts into the product PR.
+        await GitAsync(work, ["reset", "-q", "--", ".autocoder"], cancellationToken);
         var status = await GitAsync(work, ["status", "--porcelain"], cancellationToken);
         if (string.IsNullOrWhiteSpace(status.StdOut))
         {

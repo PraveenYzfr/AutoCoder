@@ -28,6 +28,8 @@ internal static class WorkspacePaths
         var p = relative.Replace('\\', '/');
         return p.StartsWith(".git/", StringComparison.OrdinalIgnoreCase)
                || p.Contains("/.git/", StringComparison.OrdinalIgnoreCase)
+               || p.StartsWith(".autocoder/", StringComparison.OrdinalIgnoreCase)
+               || p.Contains("/.autocoder/", StringComparison.OrdinalIgnoreCase)
                || p.StartsWith("bin/", StringComparison.OrdinalIgnoreCase)
                || p.Contains("/bin/", StringComparison.OrdinalIgnoreCase)
                || p.StartsWith("obj/", StringComparison.OrdinalIgnoreCase)
