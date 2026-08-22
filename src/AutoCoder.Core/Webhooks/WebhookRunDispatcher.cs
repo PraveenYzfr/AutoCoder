@@ -213,5 +213,5 @@ public sealed class WebhookRunDispatcher
         }
     }
 
-    private string ArtifactsDir() => Path.GetFullPath(_options.Webhooks.ArtifactsDirectory);
+    private string ArtifactsDir() => RunWorkspace.AppRoot(_options);
 }

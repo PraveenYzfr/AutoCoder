@@ -148,8 +148,9 @@ public sealed class DockerSandboxRunner : ISandboxRunner
     };
 
     /// <summary>
-    /// When AutoCoder itself runs in a container, bind-mounts must use the host path
-    /// (AUTOCODER_HOST_WORKSPACE_ROOT) so sibling build containers see the clone.
+    /// Only place that may emit AUTOCODER_HOST_WORKSPACE_ROOT.
+    /// App I/O stays on the container path; this remaps it for sandbox <c>docker run -v</c>
+    /// so sibling build containers see the clone on the host.
     /// </summary>
     public static string ToHostPath(string workDirectory)
     {

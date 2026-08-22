@@ -1,6 +1,8 @@
+using AutoCoder.Abstractions.Config;
 using AutoCoder.Core.Agent;
 using AutoCoder.Core.Config;
 using AutoCoder.Core.Llm;
+using AutoCoder.Core.Runs;
 
 namespace AutoCoder.Tests;
 
@@ -54,6 +56,40 @@ public sealed class WorkspaceAndPricingAndConfigTests
         Assert.False(options.Projects["simpleapp"].AutoMerge);
         Assert.Equal(3, options.Resilience.MaxAttempts);
         Assert.Equal(250, options.Resilience.BaseDelayMs);
+        Assert.Equal("deepseek", options.Agents["default"].Costly?.Type);
+        Assert.Equal("deepseek-v4-pro", options.Agents["default"].Costly?.Model);
+        Assert.Equal("/app/runs", options.Webhooks.ArtifactsDirectory);
+    }
+
+    [Fact]
+    public void App_io_uses_container_path_never_host()
+    {
+        var prevC = Environment.GetEnvironmentVariable("AUTOCODER_CONTAINER_WORKSPACE_ROOT");
+        var prevH = Environment.GetEnvironmentVariable("AUTOCODER_HOST_WORKSPACE_ROOT");
+        var container = Path.Combine(Path.GetTempPath(), "ac-app-runs", Guid.NewGuid().ToString("N"));
+        try
+        {
+            Environment.SetEnvironmentVariable("AUTOCODER_CONTAINER_WORKSPACE_ROOT", container);
+            Environment.SetEnvironmentVariable("AUTOCODER_HOST_WORKSPACE_ROOT", "/var/lib/autocoder/runs");
+            var options = new AutoCoderOptions();
+            options.Webhooks.ArtifactsDirectory = "/var/lib/autocoder/runs";
+            var root = RunWorkspace.AppRoot(options);
+            Assert.Equal(Path.GetFullPath(container), root);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("AUTOCODER_CONTAINER_WORKSPACE_ROOT", prevC);
+            Environment.SetEnvironmentVariable("AUTOCODER_HOST_WORKSPACE_ROOT", prevH);
+            try { Directory.Delete(container, true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void Anthropic_omits_temperature_on_sonnet_5()
+    {
+        Assert.False(AnthropicLlmProvider.AcceptsTemperature("claude-sonnet-5"));
+        Assert.False(AnthropicLlmProvider.AcceptsTemperature("claude-opus-4-5"));
+        Assert.True(AnthropicLlmProvider.AcceptsTemperature("claude-3-5-sonnet-20241022"));
     }
 
     private static string FindRepoFile(string relative)

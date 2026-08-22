@@ -43,6 +43,7 @@ Create empty database **`AutoCoder`** + least-privilege login. Schema not requir
 **Do not set sandbox `--network none`.** `dotnet build` must reach nuget.org on first restore. Default is `bridge`. Optional override: `AUTOCODER_SANDBOX_NETWORK` (keep `bridge` unless a nuget-only network exists).
 
 Set `AUTOCODER_HOST_WORKSPACE_ROOT=/var/lib/autocoder/runs` so sibling build containers bind-mount the host path.
+App file I/O uses `/app/runs` (`AUTOCODER_CONTAINER_WORKSPACE_ROOT` / `artifacts_directory`). Do not point the app at the host path.
 
 `AUTOCODER_REQUIRE_DOCKER=true` — refuse host-local builds on the VM.
 

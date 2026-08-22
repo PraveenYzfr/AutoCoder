@@ -8,7 +8,7 @@
 #
 # Live loop this config demands:
 #   AssignedToAgent → webhook → extract ticket → clone SimpleApp
-#   → cheap scout → costly Claude plan → approve → cheap implement
+#   → cheap scout → costly DeepSeek Pro plan → approve → cheap implement
 #   → dotnet build / test → secret-scan → PR (NO MERGE)
 #   → Jira comment + In Review (or Agent Failure)
 #
@@ -24,7 +24,7 @@ webhooks:
   require_secret: true          # production: HMAC/token required
   secret_env: JIRA_WEBHOOK_SECRET
   dry_run: false                # REAL clone / build / PR / Jira writeback
-  artifacts_directory: /var/lib/autocoder/runs
+  artifacts_directory: /app/runs   # container path; host bind is /var/lib/autocoder/runs
 
 github_auth:
   mode: ${GITHUB_AUTH_MODE}     # pat (VM early) | github_app (enterprise)
@@ -37,8 +37,9 @@ agents:
       model: deepseek-v4-flash
       endpoint: https://api.deepseek.com/v1
     costly:
-      type: anthropic
-      model: claude-sonnet-5
+      type: deepseek
+      model: deepseek-v4-pro
+      endpoint: https://api.deepseek.com/v1
     role_tiers:
       summarize: cheap
       comment: cheap
@@ -106,7 +107,7 @@ pipelines:
       - ExtractTicket                  # normalize Jira fields (no LLM)
       - ProvisionSandbox               # clone allowlisted repo FIRST
       - ScoutRepo                      # cheap model: stack + layout + likely files
-      - GeneratePlan                   # costly Claude: plan using scout, not ticket-only
+      - GeneratePlan                   # costly DeepSeek Pro: plan using scout, not ticket-only
       - ApprovalGate
       - AgenticImplement               # cheap model implements the plan
       - Build                          # e.g. dotnet build — fail run if compile fails

@@ -166,6 +166,9 @@ public static class AutoCoderConfigLoader
             {
                 agent.Type = "routed";
                 agent.Costly = MergeSlot(agent.Costly, costlyEnv);
+                if (costlyEnv is "deepseek" &&
+                    (string.IsNullOrWhiteSpace(agent.Costly.Model) || agent.Costly.Model.Contains("flash", StringComparison.OrdinalIgnoreCase)))
+                    agent.Costly.Model = "deepseek-v4-pro";
             }
         }
     }

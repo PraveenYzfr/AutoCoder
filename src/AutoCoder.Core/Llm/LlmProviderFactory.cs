@@ -83,7 +83,7 @@ public static class LlmProviderFactory
 
         if (costly is HeuristicLlmProvider)
         {
-            Console.WriteLine("[llm] No costly key (Anthropic/OpenAI/Gemini); planning will use cheap DeepSeek.");
+            Console.WriteLine("[llm] No costly key (DeepSeek/Groq/Anthropic); planning will use cheap DeepSeek.");
             costly = cheap;
         }
 
@@ -99,19 +99,23 @@ public static class LlmProviderFactory
         var forced = Environment.GetEnvironmentVariable("AUTOCODER_COSTLY_PROVIDER")?.Trim().ToLowerInvariant();
         if (!string.IsNullOrWhiteSpace(forced))
             return CostlySlotFor(forced);
+        if (HasKey("deepseek"))
+            return CostlySlotFor("deepseek");
+        if (HasKey("groq"))
+            return CostlySlotFor("groq");
         if (HasKey("anthropic"))
             return CostlySlotFor("anthropic");
         if (HasKey("openai"))
             return CostlySlotFor("openai");
         if (HasKey("gemini"))
             return CostlySlotFor("gemini");
-        return CostlySlotFor("anthropic");
+        return CostlySlotFor("deepseek");
     }
 
     private static IEnumerable<AgentOptions> CostlyFallbacks(string? alreadyTried)
     {
         var tried = (alreadyTried ?? "").Trim().ToLowerInvariant();
-        foreach (var type in new[] { "anthropic", "openai", "gemini" })
+        foreach (var type in new[] { "deepseek", "groq", "anthropic", "openai", "gemini" })
         {
             if (type == tried || !HasKey(type))
                 continue;

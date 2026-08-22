@@ -32,6 +32,7 @@ services:
       AUTOCODER_JIRA_POLL: "true"
       AUTOCODER_SANDBOX: docker
       AUTOCODER_REQUIRE_DOCKER: "true"
+      # Container path = app I/O (logs, dashboard, leases). Host path = sandbox docker -v only.
       AUTOCODER_HOST_WORKSPACE_ROOT: /var/lib/autocoder/runs
       AUTOCODER_CONTAINER_WORKSPACE_ROOT: /app/runs
       # Claude: set DOCKER_HOST to the socket proxy, e.g. tcp://docker-socket-proxy:2375

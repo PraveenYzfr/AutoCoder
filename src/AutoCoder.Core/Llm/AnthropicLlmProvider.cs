@@ -63,9 +63,11 @@ public sealed class AnthropicLlmProvider : ILlmProvider, IDisposable
         {
             ["model"] = model,
             ["max_tokens"] = request.MaxTokens ?? 4096,
-            ["temperature"] = 0.2,
             ["messages"] = messages
         };
+        // claude-sonnet-5 / Claude 4.x reject `temperature` (HTTP 400 deprecated).
+        if (AcceptsTemperature(model))
+            payload["temperature"] = 0.2;
         if (!string.IsNullOrWhiteSpace(system))
             payload["system"] = system;
 
@@ -100,6 +102,19 @@ public sealed class AnthropicLlmProvider : ILlmProvider, IDisposable
         }
 
         return LlmUsage.Complete("anthropic", model, text.Trim(), prompt, completion);
+    }
+
+    internal static bool AcceptsTemperature(string model)
+    {
+        var m = (model ?? "").Trim().ToLowerInvariant();
+        if (string.IsNullOrEmpty(m))
+            return true;
+        return !(m.Contains("sonnet-5")
+                 || m.Contains("sonnet-4")
+                 || m.Contains("opus-4")
+                 || m.Contains("haiku-4")
+                 || m.Contains("claude-4")
+                 || m.Contains("claude-sonnet-4"));
     }
 
     private string ResolveModel(string modelRole)

@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using AutoCoder.Abstractions.Config;
+using AutoCoder.Core.Runs;
 
 namespace AutoCoder.Core.Dashboard;
 
@@ -14,19 +15,8 @@ public static class RunCatalog
         "Build", "Test", "SecretScan", "CommitAndOpenPr", "WritebackTicket", "PersistRunResult"
     ];
 
-    public static string ResolveRoot(AutoCoderOptions? options = null)
-    {
-        var container = Environment.GetEnvironmentVariable("AUTOCODER_CONTAINER_WORKSPACE_ROOT");
-        if (!string.IsNullOrWhiteSpace(container) && Directory.Exists(container))
-            return Path.GetFullPath(container);
-
-        var configured = options?.Webhooks.ArtifactsDirectory;
-        if (!string.IsNullOrWhiteSpace(configured) && Directory.Exists(configured))
-            return Path.GetFullPath(configured);
-
-        var local = Path.GetFullPath("runs");
-        return Directory.Exists(local) ? local : Path.GetFullPath(configured ?? "runs");
-    }
+    public static string ResolveRoot(AutoCoderOptions? options = null) =>
+        RunWorkspace.AppRoot(options);
 
     public static IReadOnlyList<RunSummary> List(string root, int take = 50)
     {

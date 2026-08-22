@@ -8,7 +8,9 @@ public static class DashboardAuth
 {
     public static bool IsAllowed(HttpRequest request)
     {
-        if (!string.IsNullOrWhiteSpace(request.Headers["Cf-Access-Authenticated-User-Email"].FirstOrDefault()))
+        // Access may forward the email, the JWT, or both. Either means the edge already authenticated.
+        if (!string.IsNullOrWhiteSpace(request.Headers["Cf-Access-Authenticated-User-Email"].FirstOrDefault())
+            || !string.IsNullOrWhiteSpace(request.Headers["Cf-Access-Jwt-Assertion"].FirstOrDefault()))
             return true;
 
         var expected = Environment.GetEnvironmentVariable("AUTOCODER_UI_TOKEN");

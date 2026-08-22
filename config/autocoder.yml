@@ -6,7 +6,7 @@
 #   JIRA_EMAIL=you@company.com
 #   JIRA_TOKEN=...
 #   DEEPSEEK_API_KEY=...          # cheap: coding + summarize
-#   ANTHROPIC_API_KEY=...         # costly: planning (or OPENAI_API_KEY)
+#   ANTHROPIC_API_KEY=...         # optional benchmark: AUTOCODER_COSTLY_PROVIDER=anthropic
 #
 # Ticket key is NOT in this file — pass it at runtime:
 #   dotnet run --project src/AutoCoder.Cli -- run --ticket AC-101
@@ -31,8 +31,9 @@ agents:
       model: deepseek-v4-flash
       endpoint: https://api.deepseek.com/v1
     costly:
-      type: anthropic
-      model: claude-sonnet-5
+      type: deepseek
+      model: deepseek-v4-pro
+      endpoint: https://api.deepseek.com/v1
     role_tiers:
       summarize: cheap
       comment: cheap
@@ -42,7 +43,7 @@ agents:
       thinking: costly
       decision: costly
       primary: costly
-  # Force OpenAI as costly instead: AUTOCODER_COSTLY_PROVIDER=openai
+  # Benchmark costly: AUTOCODER_COSTLY_PROVIDER=anthropic (or openai / groq)
   # Force Groq as cheap/fast instead: AUTOCODER_CHEAP_PROVIDER=groq
   deepseek:
     type: deepseek

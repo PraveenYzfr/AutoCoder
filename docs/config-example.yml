@@ -29,8 +29,9 @@ agents:
       model: deepseek-v4-flash
       endpoint: https://api.deepseek.com/v1
     costly:
-      type: anthropic           # planning, thinking (Gemini Pro analog). openai | gemini also work
-      model: claude-sonnet-5
+      type: deepseek            # planning. AUTOCODER_COSTLY_PROVIDER=anthropic for Claude benchmark
+      model: deepseek-v4-pro
+      endpoint: https://api.deepseek.com/v1
     role_tiers:
       summarize: cheap
       coding: cheap
