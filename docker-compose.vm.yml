@@ -19,7 +19,9 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: "no"
-    mem_limit: 1g
+    # 2g, up from 1g. The orchestrator idles around 80 MB; the headroom is for
+    # holding a cloned repo plus LLM request/response bodies during a run.
+    mem_limit: 2g
     env_file:
       - .env
     environment:

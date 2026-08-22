@@ -126,7 +126,12 @@ sandbox:
     - python
     - pytest
   max_runtime_minutes: 30
-  memory: 2g
+  # Build sandbox memory. Raised from 2g: the VM has 32 GB and the whole estate
+  # idles at ~2 GB, so a dotnet restore/build had far less headroom than the
+  # host could give it. This is the limit that matters for build speed - the
+  # orchestrator's own mem_limit does not constrain builds, which run in
+  # separate containers.
+  memory: 6g
 
 poll:
   enabled: true

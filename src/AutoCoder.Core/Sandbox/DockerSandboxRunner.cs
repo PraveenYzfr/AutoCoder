@@ -98,6 +98,14 @@ public sealed class DockerSandboxRunner : ISandboxRunner
         var network = Environment.GetEnvironmentVariable("AUTOCODER_SANDBOX_NETWORK");
         if (string.IsNullOrWhiteSpace(network))
             network = "bridge";
+        // Sandbox memory is configurable via sandbox.memory, but the CPU count was
+        // hardcoded - so a build could never use more than 2 cores regardless of
+        // what the host had. Read from env with the previous value as the default,
+        // matching how AUTOCODER_SANDBOX_NETWORK is handled directly above:
+        // behaviour is identical unless the variable is set.
+        var cpus = Environment.GetEnvironmentVariable("AUTOCODER_SANDBOX_CPUS");
+        if (string.IsNullOrWhiteSpace(cpus))
+            cpus = "2";
         var name = $"autocoder-sbx-{Guid.NewGuid():N}"[..28];
         var containerArgs = args.Select(a => a.Replace('\\', '/')).ToList();
 
@@ -107,7 +115,7 @@ public sealed class DockerSandboxRunner : ISandboxRunner
             "--name", name,
             "--network", network,
             "--memory", _memory,
-            "--cpus", "2",
+            "--cpus", cpus,
             "-e", "CI=true",
             "--security-opt", "no-new-privileges",
             "--mount", $"type=bind,source={hostWork},target=/workspace",
