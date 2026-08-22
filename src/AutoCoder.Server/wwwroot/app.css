@@ -81,6 +81,25 @@ pre, .md {
   font-size: .85rem;
   overflow: auto;
 }
+.picker-row {
+  display: grid;
+  grid-template-columns: 9rem 1fr auto;
+  gap: .5rem;
+  align-items: center;
+  margin: .45rem 0;
+}
+.picker-row select { width: 100%; min-width: 0; }
+button {
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: .4rem .7rem;
+  cursor: pointer;
+}
+@media (max-width: 700px) {
+  .picker-row { grid-template-columns: 1fr; }
+}
 details { margin: .5rem 0; }
 .locked { max-width: 36rem; margin: 4rem auto; padding: 1.5rem; }
 @media (max-width: 700px) {

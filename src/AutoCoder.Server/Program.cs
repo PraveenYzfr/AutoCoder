@@ -76,6 +76,54 @@ app.MapGet("/api/ui/routing", (HttpRequest request, HttpResponse response, AutoC
         });
     }));
 
+app.MapGet("/api/ui/models", async (HttpRequest request, HttpResponse response, AutoCoderOptions opts, CancellationToken ct) =>
+{
+    if (!DashboardAuth.IsAllowed(request))
+        return Results.Json(new { error = "dashboard locked" }, statusCode: 401);
+    var catalog = await ModelCatalog.ListAsync(ct);
+    var budget = LlmDailyBudget.Snapshot();
+    return Results.Ok(new
+    {
+        appliesTo = "next run",
+        budget = new { used = budget.Used, cap = budget.Cap },
+        providers = catalog,
+        roles = ModelCatalog.Effective(opts)
+    });
+});
+
+app.MapPut("/api/ui/model-overrides", async (HttpRequest request, AutoCoderOptions opts, CancellationToken ct) =>
+{
+    if (!DashboardAuth.IsAllowed(request))
+        return Results.Json(new { error = "dashboard locked" }, statusCode: 401);
+    var body = await request.ReadFromJsonAsync<RoleOverrideWrite>(ct);
+    if (body is null || string.IsNullOrWhiteSpace(body.Role) || string.IsNullOrWhiteSpace(body.Provider) || string.IsNullOrWhiteSpace(body.Model))
+        return Results.BadRequest(new { error = "role, provider, and model are required." });
+    var catalog = await ModelCatalog.ListAsync(ct);
+    if (!ModelCatalog.IsKnown(catalog, body.Provider, body.Model))
+        return Results.BadRequest(new { error = $"{body.Provider}/{body.Model} is not on that provider's live list." });
+    var who = request.Headers["Cf-Access-Authenticated-User-Email"].FirstOrDefault() ?? "token";
+    ModelOverrideStore.Set(body.Role, body.Provider, body.Model, who, opts);
+    return Results.Ok(ModelCatalog.Effective(opts));
+});
+
+app.MapDelete("/api/ui/model-overrides", (HttpRequest request, AutoCoderOptions opts) =>
+{
+    if (!DashboardAuth.IsAllowed(request))
+        return Results.Json(new { error = "dashboard locked" }, statusCode: 401);
+    var who = request.Headers["Cf-Access-Authenticated-User-Email"].FirstOrDefault() ?? "token";
+    ModelOverrideStore.Reset(null, who, opts);
+    return Results.Ok(ModelCatalog.Effective(opts));
+});
+
+app.MapDelete("/api/ui/model-overrides/{role}", (string role, HttpRequest request, AutoCoderOptions opts) =>
+{
+    if (!DashboardAuth.IsAllowed(request))
+        return Results.Json(new { error = "dashboard locked" }, statusCode: 401);
+    var who = request.Headers["Cf-Access-Authenticated-User-Email"].FirstOrDefault() ?? "token";
+    ModelOverrideStore.Reset(role, who, opts);
+    return Results.Ok(ModelCatalog.Effective(opts));
+});
+
 app.MapGet("/api/runs", (HttpRequest request, HttpResponse response, AutoCoderOptions opts) =>
     RequireUi(request, response, () => Results.Ok(RunCatalog.List(RunCatalog.ResolveRoot(opts)))));
 
@@ -212,3 +260,10 @@ app.Run();
 
 static bool HasEnv(string name) =>
     !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(name));
+
+sealed class RoleOverrideWrite
+{
+    public string? Role { get; set; }
+    public string? Provider { get; set; }
+    public string? Model { get; set; }
+}

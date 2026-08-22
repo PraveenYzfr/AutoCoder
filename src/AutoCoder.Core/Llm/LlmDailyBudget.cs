@@ -8,6 +8,19 @@ namespace AutoCoder.Core.Llm;
 /// </summary>
 public static class LlmDailyBudget
 {
+    public static (int Used, int Cap) Snapshot()
+    {
+        var raw = Environment.GetEnvironmentVariable("AUTOCODER_LLM_DAILY_CALL_BUDGET");
+        var cap = 0;
+        if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out var parsed))
+            cap = parsed;
+        var used = 0;
+        var path = Path.Combine(RunWorkspace.AppRoot(), "llm-budget", $"{DateTime.UtcNow:yyyy-MM-dd}.txt");
+        if (File.Exists(path) && int.TryParse(File.ReadAllText(path).Trim(), out var existing))
+            used = existing;
+        return (used, cap);
+    }
+
     public static void Consume(int calls = 1)
     {
         var raw = Environment.GetEnvironmentVariable("AUTOCODER_LLM_DAILY_CALL_BUDGET");

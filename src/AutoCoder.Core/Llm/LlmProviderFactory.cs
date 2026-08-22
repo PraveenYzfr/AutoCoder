@@ -36,6 +36,8 @@ public static class LlmProviderFactory
         var slot = string.Equals(coding, "costly", StringComparison.OrdinalIgnoreCase)
             ? agent.Costly
             : agent.Cheap;
+        if (ModelOverrideStore.TryGet("coding", out var over) && over is not null)
+            return over.Provider.Trim().ToLowerInvariant();
         if (slot is not null && !string.IsNullOrWhiteSpace(slot.Type))
             return slot.Type.Trim().ToLowerInvariant();
         var type = ResolveType(options, agentName);
@@ -49,6 +51,8 @@ public static class LlmProviderFactory
         var slot = string.Equals(coding, "costly", StringComparison.OrdinalIgnoreCase)
             ? agent.Costly
             : agent.Cheap;
+        if (ModelOverrideStore.TryGet("coding", out var over) && over is not null)
+            return SanitizeModel(over.Provider, over.Model);
         var model = slot?.Model
             ?? Environment.GetEnvironmentVariable("AUTOCODER_AGENT_MODEL")
             ?? DeepSeekModels.Flash;
@@ -91,8 +95,33 @@ public static class LlmProviderFactory
             $"[llm] Routed: cheap={cheapSlot.Type}/{cheapSlot.Model ?? "(default)"} "
             + $"costly={costlySlot.Type}/{costlySlot.Model ?? "(default)"} "
             + "(summarize/coding=cheap, planning/thinking=costly)");
-        return new RoutedLlmProvider(cheap, costly, agent.RoleTiers);
+        var overrides = ModelOverrideStore.Load();
+        return new RoutedLlmProvider(cheap, costly, agent.RoleTiers, overrides.Roles, (p, m) => CreateNamed(p, m));
     }
+
+    public static ILlmProvider CreateNamed(string type, string? model)
+    {
+        var slot = new AgentOptions
+        {
+            Type = type,
+            Model = model,
+            Endpoint = type switch
+            {
+                "deepseek" => "https://api.deepseek.com/v1",
+                "groq" => GroqModels.BaseUrl,
+                "openai" => "https://api.openai.com/v1",
+                _ => null
+            }
+        };
+        return CreateBackend(slot, type);
+    }
+
+    private static string SanitizeModel(string type, string model) => type.Trim().ToLowerInvariant() switch
+    {
+        "deepseek" => DeepSeekModels.Sanitize(model),
+        "groq" => GroqModels.Sanitize(model),
+        _ => model
+    };
 
     private static AgentOptions DefaultCostlySlot()
     {

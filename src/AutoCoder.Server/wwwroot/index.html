@@ -13,9 +13,16 @@
       <div class="sub">Live: Jira ticket → clone → plan → code → PR</div>
       <div class="sub" id="routing"></div>
     </div>
-    <div class="sub"><a href="/health">/health</a> · read-only</div>
+      <div class="sub"><a href="/health">/health</a></div>
   </header>
   <main>
+    <section class="card" id="pickers">
+      <h2>Models for the next run</h2>
+      <p class="sub" id="pickerNote">Applies to the next run only. Live lists from each provider — no hardcoded names.</p>
+      <p class="sub" id="budget"></p>
+      <div id="pickerRows"></div>
+      <button type="button" id="resetAll" hidden>Reset all to config</button>
+    </section>
     <div class="filters">
       <input id="ticket" placeholder="Filter ticket" autocomplete="off">
       <select id="status">

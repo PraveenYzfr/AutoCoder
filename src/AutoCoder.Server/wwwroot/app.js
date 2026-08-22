@@ -1,5 +1,5 @@
-async function api(path) {
-  const res = await fetch(path, { headers: { Accept: "application/json" } });
+async function api(path, opts) {
+  const res = await fetch(path, { headers: { Accept: "application/json" }, ...opts });
   if (res.status === 401) {
     document.body.innerHTML = `<div class="locked"><h1>Dashboard locked</h1>
       <p>This UI is not public. Open with <code>?token=…</code> after Claude sets
@@ -32,6 +32,7 @@ async function listPage() {
   const routing = await api("/api/ui/routing");
   document.getElementById("routing").textContent =
     `Scout/summarize: ${routing.cheap} · Plan: ${routing.costly} · Code: ${routing.coding}`;
+  await drawPickers();
 
   const ticket = document.getElementById("ticket");
   const status = document.getElementById("status");
@@ -119,4 +120,63 @@ async function detailPage() {
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[ch]));
+}
+
+async function drawPickers() {
+  const box = document.getElementById("pickerRows");
+  if (!box) return;
+  const data = await api("/api/ui/models");
+  const cap = data.budget?.cap;
+  document.getElementById("budget").textContent = cap > 0
+    ? `Daily LLM calls: ${data.budget.used} / ${cap}`
+    : `Daily LLM calls: ${data.budget?.used ?? 0} (unlimited)`;
+  document.getElementById("pickerNote").textContent =
+    "Applies to the next run only. A run already in progress keeps its models.";
+  const resetAll = document.getElementById("resetAll");
+  const hasOverride = (data.roles || []).some(r => r.source === "override");
+  resetAll.hidden = !hasOverride;
+  resetAll.onclick = async () => {
+    await api("/api/ui/model-overrides", { method: "DELETE" });
+    await drawPickers();
+  };
+  box.innerHTML = (data.roles || []).map(role => {
+    const groups = (data.providers || []).map(p => {
+      if (p.error)
+        return `<optgroup label="${p.name} (unavailable: ${escapeHtml(p.error)})"></optgroup>`;
+      const opts = (p.models || []).map(m => {
+        const sel = p.name === role.provider && m.id === role.model ? " selected" : "";
+        return `<option value="${p.name}::${escapeHtml(m.id)}"${sel}>${p.name} / ${escapeHtml(m.id)}</option>`;
+      }).join("");
+      return `<optgroup label="${p.name}">${opts}</optgroup>`;
+    }).join("");
+    const reset = role.source === "override"
+      ? `<button type="button" data-reset="${role.role}">Reset</button>`
+      : "";
+    return `<div class="picker-row">
+      <label>${role.role}<span class="sub"> ${role.source}</span></label>
+      <select data-role="${role.role}">${groups}</select>
+      ${reset}
+    </div>`;
+  }).join("");
+  box.querySelectorAll("select").forEach(sel => {
+    sel.addEventListener("change", async () => {
+      const [provider, model] = sel.value.split("::");
+      const res = await fetch("/api/ui/model-overrides", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ role: sel.dataset.role, provider, model })
+      });
+      if (!res.ok) {
+        alert(await res.text());
+        return;
+      }
+      await drawPickers();
+    });
+  });
+  box.querySelectorAll("[data-reset]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      await api(`/api/ui/model-overrides/${encodeURIComponent(btn.dataset.reset)}`, { method: "DELETE" });
+      await drawPickers();
+    });
+  });
 }
