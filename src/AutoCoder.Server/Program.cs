@@ -5,6 +5,7 @@ using AutoCoder.Core.Config;
 using AutoCoder.Core.Dashboard;
 using AutoCoder.Core.Llm;
 using AutoCoder.Core.Logging;
+using AutoCoder.Core.Runs;
 using AutoCoder.Core.Webhooks;
 using AutoCoder.Server;
 using Microsoft.Extensions.Logging;
@@ -16,6 +17,10 @@ var configPath = args.SkipWhile(a => a != "--config").Skip(1).FirstOrDefault()
 
 var options = AutoCoderConfigLoader.Load(configPath);
 var loadedFrom = AutoCoderConfigLoader.ResolvePath(configPath) ?? "(defaults)";
+
+// Sweep on boot too, so a backlog accumulated before this policy existed is cleaned up
+// on the next deploy, not just on the next run.
+RunRetention.Apply(RunWorkspace.AppRoot(options));
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();

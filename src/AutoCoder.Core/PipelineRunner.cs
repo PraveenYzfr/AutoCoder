@@ -29,66 +29,75 @@ public sealed class PipelineRunner
         using var budget = RunBudget.Enter(context, options?.Limits);
         using var slot = await RunConcurrency.AcquireAsync(cancellationToken);
 
-        foreach (var step in pipeline.Steps)
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var started = DateTime.UtcNow;
-            RunLog.Event("step.started", context, fields: ("step", step.Name));
-            try
+            foreach (var step in pipeline.Steps)
             {
-                await step.ExecuteAsync(context, cancellationToken);
-                budget.ThrowIfExceeded();
-                RunLog.Event(
-                    "step.succeeded",
-                    context,
-                    fields: [("step", step.Name), ("ms", (DateTime.UtcNow - started).TotalMilliseconds)]);
-            }
-            catch (Exception ex)
-            {
-                context.FailureReason ??= ex.Message;
-                RunLog.Event(
-                    "step.failed",
-                    context,
-                    LogLevel.Error,
-                    ex,
-                    ("step", step.Name),
-                    ("error", ex.Message),
-                    ("ms", (DateTime.UtcNow - started).TotalMilliseconds));
-
-                if (step.Name != "WritebackTicket")
+                cancellationToken.ThrowIfCancellationRequested();
+                var started = DateTime.UtcNow;
+                RunLog.Event("step.started", context, fields: ("step", step.Name));
+                try
                 {
-                    var writeback = pipeline.Steps.FirstOrDefault(s => s.Name == "WritebackTicket");
-                    if (writeback is not null)
+                    await step.ExecuteAsync(context, cancellationToken);
+                    budget.ThrowIfExceeded();
+                    RunLog.Event(
+                        "step.succeeded",
+                        context,
+                        fields: [("step", step.Name), ("ms", (DateTime.UtcNow - started).TotalMilliseconds)]);
+                }
+                catch (Exception ex)
+                {
+                    context.FailureReason ??= ex.Message;
+                    RunLog.Event(
+                        "step.failed",
+                        context,
+                        LogLevel.Error,
+                        ex,
+                        ("step", step.Name),
+                        ("error", ex.Message),
+                        ("ms", (DateTime.UtcNow - started).TotalMilliseconds));
+
+                    if (step.Name != "WritebackTicket")
                     {
-                        try
+                        var writeback = pipeline.Steps.FirstOrDefault(s => s.Name == "WritebackTicket");
+                        if (writeback is not null)
                         {
-                            await writeback.ExecuteAsync(context, cancellationToken);
-                            RunLog.Event("step.succeeded", context, fields: [("step", writeback.Name), ("ms", 0)]);
-                        }
-                        catch (Exception wb)
-                        {
-                            RunLog.Event("writeback.failed", context, LogLevel.Error, wb,
-                                ("afterStep", step.Name), ("error", wb.Message));
+                            try
+                            {
+                                await writeback.ExecuteAsync(context, cancellationToken);
+                                RunLog.Event("step.succeeded", context, fields: [("step", writeback.Name), ("ms", 0)]);
+                            }
+                            catch (Exception wb)
+                            {
+                                RunLog.Event("writeback.failed", context, LogLevel.Error, wb,
+                                    ("afterStep", step.Name), ("error", wb.Message));
+                            }
                         }
                     }
-                }
 
-                if (step.Name != "PersistRunResult")
-                {
-                    var persist = pipeline.Steps.FirstOrDefault(s => s.Name == "PersistRunResult");
-                    if (persist is not null)
+                    if (step.Name != "PersistRunResult")
                     {
-                        await persist.ExecuteAsync(context, cancellationToken);
-                        RunLog.Event("step.succeeded", context, fields: [("step", persist.Name), ("ms", 0)]);
+                        var persist = pipeline.Steps.FirstOrDefault(s => s.Name == "PersistRunResult");
+                        if (persist is not null)
+                        {
+                            await persist.ExecuteAsync(context, cancellationToken);
+                            RunLog.Event("step.succeeded", context, fields: [("step", persist.Name), ("ms", 0)]);
+                        }
                     }
-                }
 
-                RunLog.Event("run.failed", context, LogLevel.Error, ex, ("step", step.Name), ("error", ex.Message));
-                throw;
+                    RunLog.Event("run.failed", context, LogLevel.Error, ex, ("step", step.Name), ("error", ex.Message));
+                    throw;
+                }
             }
+
+            RunLog.Event("run.succeeded", context);
         }
-
-        RunLog.Event("run.succeeded", context);
+        finally
+        {
+            // Disk retention (workspace cleanup + old-run pruning) — see RunRetention for policy.
+            // Runs for every completed run (success or failure), not just on a timer.
+            RunRetention.Apply(context.ArtifactsDirectory);
+        }
     }
 
     public static string NewRunId(string? slug = null)
