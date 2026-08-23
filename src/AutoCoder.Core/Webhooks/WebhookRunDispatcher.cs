@@ -153,7 +153,7 @@ public sealed class WebhookRunDispatcher
                 new InMemoryTicketSource(ticket),
                 resolved.JiraBaseUrl,
                 live: !dryRun);
-            ILlmProvider llm = LlmProviderFactory.Create(_options, project.Agent);
+            ILlmProvider llm = LlmProviderFactory.Create(_options, project.Agent, dryRun);
             var (sandbox, repoHost, gate) = LiveAdapterFactory.Create(_options, dryRun, autoApprove: true);
 
             var pipeline = new FixBugPipeline(_options, ticketSource, llm, gate, sandbox, repoHost);

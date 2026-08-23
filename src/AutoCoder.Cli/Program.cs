@@ -159,7 +159,7 @@ static async Task RunPipelineAsync(
     var agentName = projectName is not null && options.Projects.TryGetValue(projectName, out var p)
         ? p.Agent
         : null;
-    ILlmProvider llm = LlmProviderFactory.Create(options, agentName);
+    ILlmProvider llm = LlmProviderFactory.Create(options, agentName, dryRun);
     var (sandbox, repoHost, gate) = LiveAdapterFactory.Create(options, dryRun, autoApprove || dryRun);
 
     var pipeline = new FixBugPipeline(options, ticketSource, llm, gate, sandbox, repoHost);

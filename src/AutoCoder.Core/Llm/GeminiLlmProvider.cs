@@ -87,18 +87,20 @@ public sealed class GeminiLlmProvider : ILlmProvider, IDisposable
         var raw = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            throw new InvalidOperationException(
-                $"Gemini API error {(int)response.StatusCode}: {Truncate(raw, 800)}");
+            throw new LlmProviderException(
+                "gemini",
+                $"Gemini API error {(int)response.StatusCode}: {Truncate(raw, 800)}",
+                (int)response.StatusCode);
         }
 
         var parsed = JsonSerializer.Deserialize<GeminiResponse>(raw, JsonOptions)
-            ?? throw new InvalidOperationException("Empty Gemini response.");
+            ?? throw new LlmProviderException("gemini", "Empty Gemini response.", isEmptyContent: true);
 
         var text = parsed.Candidates?
             .SelectMany(c => c.Content?.Parts ?? [])
             .Select(p => p.Text)
             .FirstOrDefault(t => !string.IsNullOrWhiteSpace(t))
-            ?? throw new InvalidOperationException("Gemini returned no text candidates.");
+            ?? throw new LlmProviderException("gemini", "Gemini returned no text candidates.", isEmptyContent: true);
 
         var promptTokens = parsed.UsageMetadata?.PromptTokenCount ?? EstimateTokens(systemText + string.Join("", request.Messages.Select(m => m.Content)));
         var completionTokens = parsed.UsageMetadata?.CandidatesTokenCount ?? EstimateTokens(text);

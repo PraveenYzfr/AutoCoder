@@ -77,7 +77,12 @@ public sealed class AnthropicLlmProvider : ILlmProvider, IDisposable
             cancellationToken);
         var raw = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Anthropic error {(int)response.StatusCode}: {Truncate(raw, 800)}");
+        {
+            throw new LlmProviderException(
+                "anthropic",
+                $"Anthropic error {(int)response.StatusCode}: {Truncate(raw, 800)}",
+                (int)response.StatusCode);
+        }
 
         using var doc = JsonDocument.Parse(raw);
         var text = "";
@@ -91,7 +96,7 @@ public sealed class AnthropicLlmProvider : ILlmProvider, IDisposable
         }
 
         if (string.IsNullOrWhiteSpace(text))
-            throw new InvalidOperationException("Anthropic returned no text.");
+            throw new LlmProviderException("anthropic", "Anthropic returned no text.", isEmptyContent: true);
 
         var prompt = 0;
         var completion = 0;

@@ -1,5 +1,6 @@
 using AutoCoder.Abstractions;
 using AutoCoder.Abstractions.Config;
+using AutoCoder.Core.Llm;
 using AutoCoder.Core.Logging;
 using AutoCoder.Core.Resilience;
 using AutoCoder.Core.Runs;
@@ -48,6 +49,7 @@ public sealed class PipelineRunner
                 catch (Exception ex)
                 {
                     context.FailureReason ??= ex.Message;
+                    context.FailureIsTransient = LlmFailureClassifier.IsTransient(ex);
                     RunLog.Event(
                         "step.failed",
                         context,
@@ -55,7 +57,8 @@ public sealed class PipelineRunner
                         ex,
                         ("step", step.Name),
                         ("error", ex.Message),
-                        ("ms", (DateTime.UtcNow - started).TotalMilliseconds));
+                        ("ms", (DateTime.UtcNow - started).TotalMilliseconds),
+                        ("transient", context.FailureIsTransient));
 
                     if (step.Name != "WritebackTicket")
                     {

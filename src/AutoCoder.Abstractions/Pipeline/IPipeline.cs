@@ -50,11 +50,20 @@ public sealed class PipelineContext
     public ApprovalResult? Approval { get; set; }
     public PullRequestResult? PullRequest { get; set; }
     public string? FailureReason { get; set; }
+    /// <summary>
+    /// True when <see cref="FailureReason"/> looks like a blip (rate limit, 5xx, timeout) rather than a
+    /// permanent problem (bad request, tests failed, secret scan). Set by <see cref="PipelineRunner"/>
+    /// via <see cref="AutoCoder.Core.Llm.LlmFailureClassifier"/>; drives whether WritebackTicket sends
+    /// the ticket back to the poller (<see cref="RetryStatus"/>) or to <see cref="FailedStatus"/>.
+    /// </summary>
+    public bool FailureIsTransient { get; set; }
     public bool DryRun { get; set; }
     public string ArtifactsDirectory { get; set; } = "runs";
     public string? DoneStatus { get; set; }
     public string? FailedStatus { get; set; }
     public string? RunningStatus { get; set; }
+    /// <summary>Status to revert a transiently-failed ticket to so the poller picks it up again.</summary>
+    public string? RetryStatus { get; set; }
     public int ProductFilesChanged { get; set; }
     public bool BuildSucceeded { get; set; }
     public bool TestsSucceeded { get; set; }

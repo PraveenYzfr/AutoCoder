@@ -3,6 +3,7 @@ using AutoCoder.Abstractions;
 using AutoCoder.Abstractions.Config;
 using AutoCoder.Core.Agent;
 using AutoCoder.Core.Config;
+using AutoCoder.Core.Runs;
 
 namespace AutoCoder.Core.Pipelines;
 
@@ -48,6 +49,9 @@ public sealed class ResolveProjectStep(AutoCoderOptions options) : IPipelineStep
         context.RunningStatus = string.IsNullOrWhiteSpace(resolved.Tracker.RunningStatus)
             ? "AgentWorking"
             : resolved.Tracker.RunningStatus;
+        context.RetryStatus = resolved.Project.JiraTrigger?.TriggerStatuses
+            ?.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s))
+            ?? "AssignedToAgent";
 
         Console.WriteLine(
             $"[{Name}] Project={context.ProjectName} repo={context.RepoUrl} jira={context.JiraBaseUrl} "
@@ -439,6 +443,9 @@ public sealed class WritebackTicketStep(ITicketSource ticketSource, ILlmProvider
 {
     public string Name => "WritebackTicket";
 
+    /// <summary>Item 10: cap transient retries so a ticket cannot loop forever on a live provider outage.</summary>
+    private const int MaxTransientAttempts = 3;
+
     public async Task ExecuteAsync(PipelineContext context, CancellationToken cancellationToken = default)
     {
         var ticket = context.Ticket ?? throw new InvalidOperationException("Ticket required.");
@@ -446,11 +453,33 @@ public sealed class WritebackTicketStep(ITicketSource ticketSource, ILlmProvider
         var pr = context.PullRequest;
         string comment;
         string? status;
+        List<string> labels;
 
-        if (failed)
+        if (failed && context.FailureIsTransient)
+        {
+            var attempt = TicketRetryTracker.IncrementAndGet(context.ArtifactsDirectory, ticket.Key);
+            if (attempt < MaxTransientAttempts)
+            {
+                // Leave it for the poller: revert to the trigger status rather than Agent Failure.
+                status = string.IsNullOrWhiteSpace(context.RetryStatus) ? null : context.RetryStatus;
+                comment = $"AutoCoder hit a transient issue on {ticket.Key} (attempt {attempt}/{MaxTransientAttempts}): "
+                          + $"{context.FailureReason}\nIt will retry automatically — no action needed yet.";
+                labels = ["autocoder:retrying"];
+            }
+            else
+            {
+                status = string.IsNullOrWhiteSpace(context.FailedStatus) ? null : context.FailedStatus;
+                comment = $"AutoCoder failed on {ticket.Key} after {attempt} transient retries.\n{context.FailureReason}";
+                labels = ["autocoder:failed"];
+                TicketRetryTracker.Reset(context.ArtifactsDirectory, ticket.Key);
+            }
+        }
+        else if (failed)
         {
             status = string.IsNullOrWhiteSpace(context.FailedStatus) ? null : context.FailedStatus;
             comment = $"AutoCoder failed on {ticket.Key}.\n{context.FailureReason}";
+            labels = ["autocoder:failed"];
+            TicketRetryTracker.Reset(context.ArtifactsDirectory, ticket.Key);
         }
         else
         {
@@ -459,6 +488,8 @@ public sealed class WritebackTicketStep(ITicketSource ticketSource, ILlmProvider
             comment = pr is null
                 ? "AutoCoder finished without a PR."
                 : $"AutoCoder completed this ticket.\nPR: {pr.Url}\nBuild: {(context.BuildSucceeded ? "passed" : "n/a")}\nTests: {(context.TestsSkipped ? $"skipped ({context.TestSkipReason})" : context.TestsSucceeded ? "passed" : "n/a")}\n{summary}";
+            labels = ["autocoder:done"];
+            TicketRetryTracker.Reset(context.ArtifactsDirectory, ticket.Key);
         }
 
         if (context.DryRun)
@@ -476,7 +507,7 @@ public sealed class WritebackTicketStep(ITicketSource ticketSource, ILlmProvider
                 TicketKey = ticket.Key,
                 NewStatus = status,
                 Comment = comment,
-                LabelsToAdd = failed ? ["autocoder:failed"] : ["autocoder:done"]
+                LabelsToAdd = labels
             }, cancellationToken);
             Console.WriteLine($"[{Name}] Jira updated");
         }
@@ -559,6 +590,7 @@ public sealed class PersistRunResultStep : IPipelineStep
             - Ticket: `{context.Ticket?.Key}`
             - Outcome: {(context.FailureReason is null ? "success" : "failed")}
             - Failure: {context.FailureReason ?? "n/a"}
+            - Failure kind: {(context.FailureReason is null ? "n/a" : context.FailureIsTransient ? "transient (will retry)" : "permanent")}
             - PR: {context.PullRequest?.Url ?? "n/a"}
             - Agent: {context.AgentSummary ?? "n/a"}
             - Dry run: {context.DryRun}

@@ -106,7 +106,7 @@ public sealed class OpenAiCompatibleLlmProvider : ILlmProvider, IDisposable
                         ("error", err)
                     ]);
             }
-            throw new InvalidOperationException(err);
+            throw new LlmProviderException(_providerName, err, (int)response.StatusCode);
         }
 
         using var doc = JsonDocument.Parse(raw);
@@ -120,9 +120,11 @@ public sealed class OpenAiCompatibleLlmProvider : ILlmProvider, IDisposable
 
         if (string.IsNullOrWhiteSpace(text))
         {
-            throw new InvalidOperationException(
+            throw new LlmProviderException(
+                _providerName,
                 $"{_providerName} returned empty content (reasoning models can spend max_tokens on thinking). "
-                + "Raise MaxTokens or set AUTOCODER_DEEPSEEK_THINKING=false.");
+                + "Raise MaxTokens or set AUTOCODER_DEEPSEEK_THINKING=false.",
+                isEmptyContent: true);
         }
 
         var prompt = 0;

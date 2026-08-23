@@ -6,14 +6,20 @@ namespace AutoCoder.Core.Llm;
 
 public static class LlmProviderFactory
 {
-    public static ILlmProvider Create(AutoCoderOptions options, string? agentName = null)
+    /// <summary>
+    /// <paramref name="dryRun"/> controls what happens when a provider's API key is missing:
+    /// dry-run substitutes <see cref="HeuristicLlmProvider"/> (no network, for local testing only);
+    /// live runs throw at construction time instead of silently fabricating a plan and opening a
+    /// real PR from it (item 10e in CLAUDE-AUTOCODER.md).
+    /// </summary>
+    public static ILlmProvider Create(AutoCoderOptions options, string? agentName = null, bool dryRun = false)
     {
         var agent = GetAgent(options, agentName);
         var type = (agent.Type ?? "routed").Trim().ToLowerInvariant();
         if (type is "routed" or "tiered" || agent.Cheap is not null || agent.Costly is not null)
-            return CreateRouted(agent);
+            return CreateRouted(agent, dryRun);
 
-        return CreateBackend(agent, type);
+        return CreateBackend(agent, type, dryRun);
     }
 
     public static AgentOptions GetAgent(AutoCoderOptions options, string? agentName = null)
@@ -65,28 +71,31 @@ public static class LlmProviderFactory
         };
     }
 
-    private static ILlmProvider CreateRouted(AgentOptions agent)
+    private static ILlmProvider CreateRouted(AgentOptions agent, bool dryRun)
     {
         var cheapSlot = agent.Cheap ?? new AgentOptions { Type = "deepseek", Model = DeepSeekModels.Flash };
         var costlySlot = agent.Costly ?? DefaultCostlySlot();
-        var cheap = CreateBackend(cheapSlot, cheapSlot.Type);
-        var costly = CreateBackend(costlySlot, costlySlot.Type);
-        if (costly is HeuristicLlmProvider)
+
+        // A slot picked from explicit config can still be missing its key on this deploy (e.g.
+        // costly: anthropic configured, but ANTHROPIC_API_KEY unset here) — swap to another
+        // *available* type rather than fail outright. This is a startup-time choice of which real
+        // provider to use, not the mid-run resilience fallback below.
+        if (!dryRun && !HasKey(costlySlot.Type))
         {
-            foreach (var fallback in CostlyFallbacks(costlySlot.Type))
+            var swap = CostlyFallbacks(costlySlot.Type).FirstOrDefault();
+            if (swap is not null)
             {
-                var candidate = CreateBackend(fallback, fallback.Type);
-                if (candidate is not HeuristicLlmProvider)
-                {
-                    costly = candidate;
-                    costlySlot = fallback;
-                    break;
-                }
+                Console.WriteLine(
+                    $"[llm] No key for configured costly '{costlySlot.Type}'; using '{swap.Type}' instead.");
+                costlySlot = swap;
             }
         }
 
+        var cheap = CreateBackend(cheapSlot, cheapSlot.Type, dryRun);
+        var costly = CreateBackend(costlySlot, costlySlot.Type, dryRun);
         if (costly is HeuristicLlmProvider)
         {
+            // Only reachable in dry-run (live runs throw above instead of yielding a heuristic).
             Console.WriteLine("[llm] No costly key (DeepSeek/Groq/Anthropic); planning will use cheap DeepSeek.");
             costly = cheap;
         }
@@ -95,11 +104,43 @@ public static class LlmProviderFactory
             $"[llm] Routed: cheap={cheapSlot.Type}/{cheapSlot.Model ?? "(default)"} "
             + $"costly={costlySlot.Type}/{costlySlot.Model ?? "(default)"} "
             + "(summarize/coding=cheap, planning/thinking=costly)");
+
+        cheap = WithTierFallback("cheap", cheapSlot.Type, DeepSeekModels.Flash, GroqModels.Fast, cheap, dryRun);
+        costly = WithTierFallback("costly", costlySlot.Type, DeepSeekModels.Pro, GroqModels.Quality, costly, dryRun);
+
         var overrides = ModelOverrideStore.Load();
-        return new RoutedLlmProvider(cheap, costly, agent.RoleTiers, overrides.Roles, (p, m) => CreateNamed(p, m));
+        return new RoutedLlmProvider(cheap, costly, agent.RoleTiers, overrides.Roles, (p, m) => CreateNamed(p, m, dryRun));
     }
 
-    public static ILlmProvider CreateNamed(string type, string? model)
+    /// <summary>
+    /// Item 10b in CLAUDE-AUTOCODER.md: fall back within the cost tier only — deepseek &lt;-&gt; groq —
+    /// never automatically escalating to Anthropic/OpenAI/Gemini (the benchmark budget, not a safety
+    /// net). If the primary is one of those benchmark providers, or the other live provider has no
+    /// key configured, there is nothing to fall back to and the provider is returned unwrapped.
+    /// </summary>
+    private static ILlmProvider WithTierFallback(
+        string tier, string primaryType, string deepSeekModel, string groqModel, ILlmProvider primary, bool dryRun)
+    {
+        if (dryRun || primary is HeuristicLlmProvider)
+            return primary;
+
+        var type = primaryType.Trim().ToLowerInvariant();
+        var fallbackType = type switch
+        {
+            "deepseek" when HasKey("groq") => "groq",
+            "groq" when HasKey("deepseek") => "deepseek",
+            _ => null
+        };
+        if (fallbackType is null)
+            return primary;
+
+        var fallbackModel = fallbackType == "groq" ? groqModel : deepSeekModel;
+        var fallback = CreateNamed(fallbackType, fallbackModel, dryRun);
+        Console.WriteLine($"[llm] {tier} tier: {type} -> {fallbackType} fallback wired ({fallbackModel}).");
+        return new FallbackLlmProvider(tier, [(type, primary), (fallbackType, fallback)]);
+    }
+
+    public static ILlmProvider CreateNamed(string type, string? model, bool dryRun = false)
     {
         var slot = new AgentOptions
         {
@@ -113,7 +154,7 @@ public static class LlmProviderFactory
                 _ => null
             }
         };
-        return CreateBackend(slot, type);
+        return CreateBackend(slot, type, dryRun);
     }
 
     private static string SanitizeModel(string type, string model) => type.Trim().ToLowerInvariant() switch
@@ -172,20 +213,20 @@ public static class LlmProviderFactory
         _ => false
     };
 
-    private static ILlmProvider CreateBackend(AgentOptions agent, string? typeHint)
+    private static ILlmProvider CreateBackend(AgentOptions agent, string? typeHint, bool dryRun = false)
     {
         var type = (typeHint ?? agent.Type ?? "deepseek").Trim().ToLowerInvariant();
         if (type is "routed" or "tiered" or "")
             type = "deepseek";
         return type switch
         {
-            "gemini" or "google" => CreateGemini(agent),
-            "deepseek" => CreateDeepSeek(agent),
-            "groq" => CreateGroq(agent),
-            "openai" => CreateOpenAi(agent),
-            "anthropic" or "claude" => CreateAnthropic(agent),
+            "gemini" or "google" => CreateGemini(agent, dryRun),
+            "deepseek" => CreateDeepSeek(agent, dryRun),
+            "groq" => CreateGroq(agent, dryRun),
+            "openai" => CreateOpenAi(agent, dryRun),
+            "anthropic" or "claude" => CreateAnthropic(agent, dryRun),
             "heuristic" or "stub" or "none" => new HeuristicLlmProvider(),
-            _ => CreateGeminiOrFallback(agent, type)
+            _ => CreateGeminiOrFallback(agent, type, dryRun)
         };
     }
 
@@ -204,14 +245,28 @@ public static class LlmProviderFactory
             ResolveCodingModel(options, agentName));
     }
 
-    private static ILlmProvider CreateDeepSeek(AgentOptions agent)
+    /// <summary>
+    /// Dry-run substitutes the heuristic stub (no network); live runs throw instead of silently
+    /// fabricating a plan and opening a real PR from it (item 10e in CLAUDE-AUTOCODER.md).
+    /// </summary>
+    private static ILlmProvider MissingKey(string envVar, string providerLabel, bool dryRun)
+    {
+        if (dryRun)
+        {
+            Console.WriteLine($"[llm] {envVar} not set; falling back to heuristic (dry-run only).");
+            return new HeuristicLlmProvider();
+        }
+
+        throw new InvalidOperationException(
+            $"{envVar} is required for the {providerLabel} provider outside --dry-run. AutoCoder will "
+            + "not silently substitute a fabricated plan for a real PR — see CLAUDE-AUTOCODER.md item 10e.");
+    }
+
+    private static ILlmProvider CreateDeepSeek(AgentOptions agent, bool dryRun = false)
     {
         var key = Environment.GetEnvironmentVariable("DEEPSEEK_API_KEY");
         if (string.IsNullOrWhiteSpace(key))
-        {
-            Console.WriteLine("[llm] DEEPSEEK_API_KEY not set; falling back to heuristic.");
-            return new HeuristicLlmProvider();
-        }
+            return MissingKey("DEEPSEEK_API_KEY", "DeepSeek", dryRun);
 
         var roleModels = RoleModels(agent);
         var model = DeepSeekModels.Sanitize(agent.Model ?? roleModels.GetValueOrDefault("cheap") ?? DeepSeekModels.Flash);
@@ -222,14 +277,11 @@ public static class LlmProviderFactory
         return new OpenAiCompatibleLlmProvider(key, baseUrl, model, "deepseek", roleModels);
     }
 
-    private static ILlmProvider CreateGroq(AgentOptions agent)
+    private static ILlmProvider CreateGroq(AgentOptions agent, bool dryRun = false)
     {
         var key = Environment.GetEnvironmentVariable("GROQ_API_KEY");
         if (string.IsNullOrWhiteSpace(key))
-        {
-            Console.WriteLine("[llm] GROQ_API_KEY not set; falling back to heuristic.");
-            return new HeuristicLlmProvider();
-        }
+            return MissingKey("GROQ_API_KEY", "Groq", dryRun);
 
         var roleModels = RoleModels(agent);
         var model = GroqModels.Sanitize(agent.Model ?? roleModels.GetValueOrDefault("cheap") ?? GroqModels.Fast);
@@ -240,14 +292,11 @@ public static class LlmProviderFactory
         return new OpenAiCompatibleLlmProvider(key, baseUrl, model, "groq", roleModels);
     }
 
-    private static ILlmProvider CreateOpenAi(AgentOptions agent)
+    private static ILlmProvider CreateOpenAi(AgentOptions agent, bool dryRun = false)
     {
         var key = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
         if (string.IsNullOrWhiteSpace(key))
-        {
-            Console.WriteLine("[llm] OPENAI_API_KEY not set; falling back to heuristic.");
-            return new HeuristicLlmProvider();
-        }
+            return MissingKey("OPENAI_API_KEY", "OpenAI", dryRun);
 
         var roleModels = RoleModels(agent);
         var model = agent.Model ?? roleModels.GetValueOrDefault("planning") ?? "gpt-4o";
@@ -258,14 +307,11 @@ public static class LlmProviderFactory
         return new OpenAiCompatibleLlmProvider(key, baseUrl, model, "openai", roleModels);
     }
 
-    private static ILlmProvider CreateAnthropic(AgentOptions agent)
+    private static ILlmProvider CreateAnthropic(AgentOptions agent, bool dryRun = false)
     {
         var key = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
         if (string.IsNullOrWhiteSpace(key))
-        {
-            Console.WriteLine("[llm] ANTHROPIC_API_KEY not set; falling back to heuristic.");
-            return new HeuristicLlmProvider();
-        }
+            return MissingKey("ANTHROPIC_API_KEY", "Anthropic", dryRun);
 
         var roleModels = RoleModels(agent);
         var model = agent.Model ?? "claude-sonnet-5";
@@ -284,27 +330,30 @@ public static class LlmProviderFactory
         return roleModels;
     }
 
-    private static ILlmProvider CreateGeminiOrFallback(AgentOptions agent, string type)
+    private static ILlmProvider CreateGeminiOrFallback(AgentOptions agent, string type, bool dryRun = false)
     {
         var key = Environment.GetEnvironmentVariable("GEMINI_API_KEY")
             ?? Environment.GetEnvironmentVariable("GOOGLE_API_KEY");
         if (!string.IsNullOrWhiteSpace(key) && type is "gemini" or "google")
-            return CreateGemini(agent);
+            return CreateGemini(agent, dryRun);
 
-        Console.WriteLine($"[llm] Provider '{type}' not implemented yet; using heuristic stub.");
-        return new HeuristicLlmProvider();
+        if (dryRun)
+        {
+            Console.WriteLine($"[llm] Provider '{type}' not implemented yet; using heuristic stub.");
+            return new HeuristicLlmProvider();
+        }
+
+        throw new InvalidOperationException(
+            $"Provider '{type}' is not implemented and no fallback key is configured for a live run.");
     }
 
-    private static ILlmProvider CreateGemini(AgentOptions agent)
+    private static ILlmProvider CreateGemini(AgentOptions agent, bool dryRun = false)
     {
         var key = Environment.GetEnvironmentVariable("GEMINI_API_KEY")
             ?? Environment.GetEnvironmentVariable("GOOGLE_API_KEY");
 
         if (string.IsNullOrWhiteSpace(key))
-        {
-            Console.WriteLine("[llm] GEMINI_API_KEY not set; falling back to heuristic planner.");
-            return new HeuristicLlmProvider();
-        }
+            return MissingKey("GEMINI_API_KEY", "Gemini", dryRun);
 
         var roleModels = RoleModels(agent);
         var defaultModel = agent.Model
