@@ -7,7 +7,7 @@ using AutoCoder.Core.Resilience;
 namespace AutoCoder.Core.Agent;
 
 /// <summary>Gemini generateContent with function-calling for the coding loop.</summary>
-internal sealed class GeminiToolClient
+internal sealed class GeminiToolClient : ICodingToolClient
 {
     private static readonly JsonSerializerOptions Json = new()
     {
@@ -26,10 +26,10 @@ internal sealed class GeminiToolClient
         _model = model;
     }
 
-    public async Task<GeminiTurn> GenerateAsync(
-        string system,
-        List<object> contents,
-        CancellationToken cancellationToken)
+    public string ProviderName => "gemini";
+    public string Model => _model;
+
+    public async Task<CodingTurn> GenerateAsync(string system, List<object> history, CancellationToken cancellationToken)
     {
         LlmDailyBudget.Consume();
         var url =
@@ -38,14 +38,8 @@ internal sealed class GeminiToolClient
         var payload = new Dictionary<string, object?>
         {
             ["systemInstruction"] = new { parts = new[] { new { text = system } } },
-            ["contents"] = contents,
-            ["tools"] = new[]
-            {
-                new
-                {
-                    functionDeclarations = ToolDefs()
-                }
-            },
+            ["contents"] = history,
+            ["tools"] = new[] { new { functionDeclarations = ToolDefs() } },
             ["generationConfig"] = new { temperature = 0.2, maxOutputTokens = 8192 }
         };
 
@@ -60,7 +54,7 @@ internal sealed class GeminiToolClient
         LlmUsage.AddGeminiUsage(_model, raw);
 
         using var doc = JsonDocument.Parse(raw);
-        var parts = new List<GeminiPart>();
+        var parts = new List<CodingPart>();
         if (!doc.RootElement.TryGetProperty("candidates", out var cands)
             || cands.ValueKind != JsonValueKind.Array
             || cands.GetArrayLength() == 0)
@@ -76,88 +70,90 @@ internal sealed class GeminiToolClient
                 parts.Add(ParsePart(p));
         }
 
-        return new GeminiTurn { Parts = parts, Raw = raw };
+        return new CodingTurn { Parts = parts, Raw = raw };
     }
 
-    private static GeminiPart ParsePart(JsonElement p)
+    public void AppendToolRound(List<object> history, CodingTurn turn, IReadOnlyList<CodingToolExecution> executions)
+    {
+        var modelParts = new List<object>();
+        var fnResponses = new List<object>();
+        foreach (var e in executions)
+        {
+            var argsDict = ParseArgsObject(e.ArgsJson);
+            modelParts.Add(new { functionCall = new { name = e.Name, args = argsDict } });
+            fnResponses.Add(new
+            {
+                functionResponse = new
+                {
+                    name = e.Name,
+                    response = new Dictionary<string, string> { ["result"] = e.Result }
+                }
+            });
+        }
+
+        history.Add(new { role = "model", parts = modelParts });
+        history.Add(new { role = "user", parts = fnResponses });
+    }
+
+    public void AppendNudge(List<object> history, CodingTurn turn, string nudge)
+    {
+        history.Add(new { role = "model", parts = new object[] { new { text = turn.CombinedText } } });
+        history.Add(new { role = "user", parts = new object[] { new { text = nudge } } });
+    }
+
+    private static CodingPart ParsePart(JsonElement p)
     {
         if (p.TryGetProperty("functionCall", out var fc))
         {
-            return new GeminiPart
+            return new CodingPart
             {
                 FunctionName = fc.GetProperty("name").GetString(),
-                FunctionArgs = fc.TryGetProperty("args", out var args) ? args.GetRawText() : "{}"
+                FunctionArgsJson = fc.TryGetProperty("args", out var args) ? args.GetRawText() : "{}"
             };
         }
 
-        return new GeminiPart
+        return new CodingPart
         {
             Text = p.TryGetProperty("text", out var t) ? t.GetString() : null
         };
     }
 
-    private static object[] ToolDefs() =>
-    [
-        Fn("list_files", "List files and folders relative to the repo root.",
-            Prop("path", "Relative directory. Use empty or '.' for root.")),
-        Fn("read_file", "Read a text file relative to the repo root.",
-            Prop("path", "Relative file path", required: true)),
-        Fn("write_file", "Create or overwrite a text file. Use this to implement the fix or feature.",
-            Prop("path", "Relative file path", required: true),
-            Prop("content", "Full file contents", required: true)),
-        Fn("grep", "Search file contents for a string (case-insensitive).",
-            Prop("pattern", "Text to find", required: true),
-            Prop("path", "Relative file or directory to search")),
-        Fn("finish", "Call when the code change is complete. Do not call until files are written.",
-            Prop("summary", "What you changed and why", required: true))
-    ];
-
-    private static object Fn(string name, string description, params object[] properties)
+    private static Dictionary<string, object?> ParseArgsObject(string argsJson)
     {
-        var props = new Dictionary<string, object>();
-        var required = new List<string>();
-        foreach (var p in properties)
+        var argsDict = new Dictionary<string, object?>();
+        try
         {
-            var d = (Dictionary<string, object>)p;
-            var n = (string)d["name"];
-            props[n] = new { type = "string", description = d["description"] };
-            if (d.TryGetValue("required", out var r) && r is true)
-                required.Add(n);
+            using var argsDoc = JsonDocument.Parse(string.IsNullOrWhiteSpace(argsJson) ? "{}" : argsJson);
+            foreach (var prop in argsDoc.RootElement.EnumerateObject())
+                argsDict[prop.Name] = prop.Value.ValueKind == JsonValueKind.String
+                    ? prop.Value.GetString()
+                    : prop.Value.GetRawText();
+        }
+        catch
+        {
+            // empty args
         }
 
-        return new
-        {
-            name,
-            description,
-            parameters = new
-            {
-                type = "object",
-                properties = props,
-                required
-            }
-        };
+        return argsDict;
     }
 
-    private static Dictionary<string, object> Prop(string name, string description, bool required = false) =>
-        new()
+    private static object[] ToolDefs() =>
+        CodingToolCatalog.Tools.Select(t =>
         {
-            ["name"] = name,
-            ["description"] = description,
-            ["required"] = required
-        };
-}
+            var props = new Dictionary<string, object>();
+            var required = new List<string>();
+            foreach (var p in t.Parameters)
+            {
+                props[p.Name] = new { type = "string", description = p.Description };
+                if (p.Required)
+                    required.Add(p.Name);
+            }
 
-internal sealed class GeminiTurn
-{
-    public List<GeminiPart> Parts { get; init; } = [];
-    public string Raw { get; init; } = "";
-}
-
-internal sealed class GeminiPart
-{
-    public string? Text { get; init; }
-    public string? FunctionName { get; init; }
-    public string? FunctionArgs { get; init; }
-    public string? ToolCallId { get; init; }
-    public bool IsFunction => !string.IsNullOrWhiteSpace(FunctionName);
+            return (object)new
+            {
+                name = t.Name,
+                description = t.Description,
+                parameters = new { type = "object", properties = props, required }
+            };
+        }).ToArray();
 }

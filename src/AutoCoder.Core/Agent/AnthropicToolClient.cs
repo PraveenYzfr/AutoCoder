@@ -8,7 +8,7 @@ using AutoCoder.Core.Resilience;
 namespace AutoCoder.Core.Agent;
 
 /// <summary>Anthropic Messages API with tool use for the coding loop (not OpenAI/Gemini wire format).</summary>
-internal sealed class AnthropicToolClient
+internal sealed class AnthropicToolClient : ICodingToolClient
 {
     private static readonly JsonSerializerOptions Json = new()
     {
@@ -28,10 +28,10 @@ internal sealed class AnthropicToolClient
         _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
     }
 
-    public async Task<AnthropicTurn> GenerateAsync(
-        string system,
-        List<object> messages,
-        CancellationToken cancellationToken)
+    public string ProviderName => "anthropic";
+    public string Model => _model;
+
+    public async Task<CodingTurn> GenerateAsync(string system, List<object> history, CancellationToken cancellationToken)
     {
         LlmDailyBudget.Consume();
 
@@ -40,7 +40,7 @@ internal sealed class AnthropicToolClient
             ["model"] = _model,
             ["max_tokens"] = 8192,
             ["system"] = system,
-            ["messages"] = messages,
+            ["messages"] = history,
             ["tools"] = ToolDefs()
         };
         if (AnthropicLlmProvider.AcceptsTemperature(_model))
@@ -57,7 +57,7 @@ internal sealed class AnthropicToolClient
         LlmUsage.AddAnthropicUsage(_model, raw);
 
         using var doc = JsonDocument.Parse(raw);
-        var parts = new List<AnthropicPart>();
+        var parts = new List<CodingPart>();
         var rawBlocks = new List<object>();
         if (!doc.RootElement.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
             throw new InvalidOperationException($"Anthropic returned no content: {raw[..Math.Min(800, raw.Length)]}");
@@ -68,79 +68,68 @@ internal sealed class AnthropicToolClient
             rawBlocks.Add(JsonSerializer.Deserialize<object>(block.GetRawText())!);
         }
 
-        var stopReason = doc.RootElement.TryGetProperty("stop_reason", out var sr) ? sr.GetString() : null;
-
-        return new AnthropicTurn { Parts = parts, RawContentBlocks = rawBlocks, StopReason = stopReason, Raw = raw };
+        return new CodingTurn { Parts = parts, ProviderState = rawBlocks, Raw = raw };
     }
 
-    private static AnthropicPart ParsePart(JsonElement block)
+    public void AppendToolRound(List<object> history, CodingTurn turn, IReadOnlyList<CodingToolExecution> executions)
+    {
+        var assistantContent = turn.ProviderState ?? turn.CombinedText;
+        history.Add(new { role = "assistant", content = assistantContent });
+        history.Add(new
+        {
+            role = "user",
+            content = executions.Select(e => (object)new
+            {
+                type = "tool_result",
+                tool_use_id = e.ToolCallId,
+                content = e.Result
+            }).ToList()
+        });
+    }
+
+    public void AppendNudge(List<object> history, CodingTurn turn, string nudge)
+    {
+        var assistantContent = turn.ProviderState ?? turn.CombinedText;
+        history.Add(new { role = "assistant", content = assistantContent });
+        history.Add(new { role = "user", content = nudge });
+    }
+
+    private static CodingPart ParsePart(JsonElement block)
     {
         var type = block.TryGetProperty("type", out var t) ? t.GetString() : null;
         if (type == "tool_use")
         {
-            return new AnthropicPart
+            return new CodingPart
             {
-                ToolUseId = block.TryGetProperty("id", out var idEl) ? idEl.GetString() : null,
+                ToolCallId = block.TryGetProperty("id", out var idEl) ? idEl.GetString() : null,
                 FunctionName = block.TryGetProperty("name", out var n) ? n.GetString() : null,
                 FunctionArgsJson = block.TryGetProperty("input", out var input) ? input.GetRawText() : "{}"
             };
         }
 
-        return new AnthropicPart
+        return new CodingPart
         {
             Text = block.TryGetProperty("text", out var txt) ? txt.GetString() : null
         };
     }
 
     private static object[] ToolDefs() =>
-    [
-        Tool("list_files", "List files and folders relative to the repo root.",
-            ("path", "Relative directory. Use empty or '.' for root.", false)),
-        Tool("read_file", "Read a text file relative to the repo root.",
-            ("path", "Relative file path", true)),
-        Tool("write_file", "Create or overwrite a text file. Use this to implement the fix or feature.",
-            ("path", "Relative file path", true),
-            ("content", "Full file contents", true)),
-        Tool("grep", "Search file contents for a string (case-insensitive).",
-            ("pattern", "Text to find", true),
-            ("path", "Relative file or directory to search", false)),
-        Tool("finish", "Call when the code change is complete. Do not call until files are written.",
-            ("summary", "What you changed and why", true))
-    ];
-
-    private static object Tool(string name, string description, params (string Name, string Description, bool Required)[] props)
-    {
-        var properties = new Dictionary<string, object>();
-        var required = new List<string>();
-        foreach (var p in props)
+        CodingToolCatalog.Tools.Select(t =>
         {
-            properties[p.Name] = new { type = "string", description = p.Description };
-            if (p.Required)
-                required.Add(p.Name);
-        }
+            var properties = new Dictionary<string, object>();
+            var required = new List<string>();
+            foreach (var p in t.Parameters)
+            {
+                properties[p.Name] = new { type = "string", description = p.Description };
+                if (p.Required)
+                    required.Add(p.Name);
+            }
 
-        return new
-        {
-            name,
-            description,
-            input_schema = new { type = "object", properties, required }
-        };
-    }
-}
-
-internal sealed class AnthropicTurn
-{
-    public List<AnthropicPart> Parts { get; init; } = [];
-    public List<object> RawContentBlocks { get; init; } = [];
-    public string? StopReason { get; init; }
-    public string Raw { get; init; } = "";
-}
-
-internal sealed class AnthropicPart
-{
-    public string? Text { get; init; }
-    public string? ToolUseId { get; init; }
-    public string? FunctionName { get; init; }
-    public string? FunctionArgsJson { get; init; }
-    public bool IsFunction => !string.IsNullOrWhiteSpace(FunctionName);
+            return (object)new
+            {
+                name = t.Name,
+                description = t.Description,
+                input_schema = new { type = "object", properties, required }
+            };
+        }).ToArray();
 }

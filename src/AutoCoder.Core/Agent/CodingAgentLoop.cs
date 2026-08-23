@@ -7,12 +7,29 @@ using AutoCoder.Core.Runs;
 
 namespace AutoCoder.Core.Agent;
 
+/// <summary>
+/// Provider-agnostic coding turn driver. Wire-format differences live in
+/// <see cref="ICodingToolClient"/> implementations (OpenAI / Gemini / Anthropic).
+/// </summary>
 public sealed class CodingAgentLoop
 {
     private const int MaxTurns = 40;
     private readonly AutoCoderOptions? _options;
+    private readonly Func<string, string, HttpClient, ICodingToolClient>? _clientFactory;
 
-    public CodingAgentLoop(AutoCoderOptions? options = null) => _options = options;
+    public CodingAgentLoop(AutoCoderOptions? options = null)
+        : this(options, clientFactory: null)
+    {
+    }
+
+    /// <summary>Test seam: inject a factory that returns a fake <see cref="ICodingToolClient"/>.</summary>
+    internal CodingAgentLoop(
+        AutoCoderOptions? options,
+        Func<string, string, HttpClient, ICodingToolClient>? clientFactory)
+    {
+        _options = options;
+        _clientFactory = clientFactory;
+    }
 
     public async Task RunAsync(PipelineContext context, CancellationToken cancellationToken = default)
     {
@@ -22,99 +39,95 @@ public sealed class CodingAgentLoop
         var model = _options is null ? DeepSeekModels.Flash : LlmProviderFactory.ResolveCodingModel(_options);
         Console.WriteLine($"[agent] coding tier={type} model={model}");
 
-        switch (type)
+        var tools = new WorkspaceTools(work);
+        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(3) };
+        var client = (_clientFactory ?? CodingToolClientFactory.Create)(type, model, http);
+        await RunTurnsAsync(context, ticket, tools, client, TurnCap(), cancellationToken);
+    }
+
+    /// <summary>Single turn driver shared by every provider.</summary>
+    internal static async Task RunTurnsAsync(
+        PipelineContext context,
+        Ticket ticket,
+        WorkspaceTools tools,
+        ICodingToolClient client,
+        int maxTurns,
+        CancellationToken cancellationToken)
+    {
+        var (system, user, intent) = Prompt(context, ticket, tools);
+        var history = new List<object> { SeedUserMessage(client.ProviderName, user) };
+
+        Console.WriteLine($"[agent] Starting coding loop ({intent}) provider={client.ProviderName} model={client.Model}");
+        LlmCallContext.CurrentRole = "coding";
+        LlmCallContext.CurrentTier = "cheap";
+        RunLog.Event(
+            "agent.started",
+            context,
+            fields:
+            [
+                ("provider", client.ProviderName),
+                ("model", client.Model),
+                ("maxTurns", maxTurns),
+                ("intent", intent)
+            ]);
+
+        for (var turn = 1; turn <= maxTurns; turn++)
         {
-            case "openai":
-                await RunOpenAiCompatibleAsync(
-                    context, work, ticket, cancellationToken,
-                    "OPENAI_API_KEY",
-                    model,
-                    "https://api.openai.com/v1",
-                    "openai");
-                break;
-            case "groq":
-                await RunOpenAiCompatibleAsync(
-                    context, work, ticket, cancellationToken,
-                    "GROQ_API_KEY",
-                    GroqModels.Sanitize(model),
-                    GroqModels.BaseUrl,
-                    "groq");
-                break;
-            case "gemini":
-            case "google":
-                await RunGeminiAsync(context, work, ticket, cancellationToken, model);
-                break;
-            case "anthropic":
-            case "claude":
-                await RunAnthropicAsync(context, work, ticket, cancellationToken, model);
-                break;
-            default:
-                await RunOpenAiCompatibleAsync(
-                    context, work, ticket, cancellationToken,
-                    "DEEPSEEK_API_KEY",
-                    DeepSeekModels.Sanitize(model),
-                    "https://api.deepseek.com/v1",
-                    "deepseek");
+            cancellationToken.ThrowIfCancellationRequested();
+            RunLog.Event("agent.turn", context, fields: [("turn", turn), ("maxTurns", maxTurns)]);
+
+            var reply = await client.GenerateAsync(system, history, cancellationToken);
+            var calls = reply.FunctionCalls;
+            var text = reply.CombinedText;
+
+            if (calls.Count == 0)
+            {
+                if (!string.IsNullOrWhiteSpace(text))
+                    Console.WriteLine($"[agent] {text[..Math.Min(400, text.Length)]}");
+                if (tools.ProductChangeCount > 0)
+                {
+                    context.AgentSummary = text;
+                    break;
+                }
+
+                client.AppendNudge(history, reply, CodingToolCatalog.NudgeNoProductChange);
+                continue;
+            }
+
+            var executions = new List<CodingToolExecution>();
+            var finished = false;
+            foreach (var call in calls)
+            {
+                Console.WriteLine($"[agent] tool {call.FunctionName}");
+                var id = string.IsNullOrWhiteSpace(call.ToolCallId)
+                    ? Guid.NewGuid().ToString("N")
+                    : call.ToolCallId!;
+                var argsJson = call.FunctionArgsJson ?? "{}";
+                var result = Execute(context, tools, call.FunctionName!, argsJson, turn);
+                if (call.FunctionName == "finish")
+                {
+                    finished = true;
+                    context.AgentSummary = result;
+                }
+
+                executions.Add(new CodingToolExecution(call.FunctionName!, argsJson, id, result));
+            }
+
+            client.AppendToolRound(history, reply, executions);
+            if (finished)
                 break;
         }
+
+        Finish(context, tools);
     }
 
-    private async Task RunGeminiAsync(
-        PipelineContext context, string work, Ticket ticket, CancellationToken cancellationToken, string model)
-    {
-        var key = Environment.GetEnvironmentVariable("GEMINI_API_KEY")
-                  ?? Environment.GetEnvironmentVariable("GOOGLE_API_KEY")
-                  ?? throw new InvalidOperationException("GEMINI_API_KEY is required for the coding agent.");
+    private static object SeedUserMessage(string provider, string user) =>
+        provider.Equals("gemini", StringComparison.OrdinalIgnoreCase)
+            ? new { role = "user", parts = new object[] { new { text = user } } }
+            : new { role = "user", content = user };
 
-        if (string.IsNullOrWhiteSpace(model)
-            || model.Contains("deepseek", StringComparison.OrdinalIgnoreCase)
-            || model.Contains("gpt-", StringComparison.OrdinalIgnoreCase)
-            || model.Contains("claude", StringComparison.OrdinalIgnoreCase))
-            model = "gemini-flash-lite-latest";
-
-        var tools = new WorkspaceTools(work);
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(3) };
-        var client = new GeminiToolClient(http, key, model);
-        await RunGeminiTurnsAsync(context, ticket, tools, client, model, TurnCap(), cancellationToken);
-    }
-
-    private async Task RunAnthropicAsync(
-        PipelineContext context, string work, Ticket ticket, CancellationToken cancellationToken, string model)
-    {
-        var key = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY")
-                  ?? throw new InvalidOperationException("ANTHROPIC_API_KEY is required for the coding agent.");
-
-        if (string.IsNullOrWhiteSpace(model)
-            || model.Contains("deepseek", StringComparison.OrdinalIgnoreCase)
-            || model.Contains("gpt-", StringComparison.OrdinalIgnoreCase)
-            || model.Contains("gemini", StringComparison.OrdinalIgnoreCase))
-            model = "claude-sonnet-5";
-
-        var tools = new WorkspaceTools(work);
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(3) };
-        var client = new AnthropicToolClient(http, key, model);
-        await RunAnthropicTurnsAsync(context, ticket, tools, client, model, TurnCap(), cancellationToken);
-    }
-
-    private async Task RunOpenAiCompatibleAsync(
-        PipelineContext context,
-        string work,
-        Ticket ticket,
-        CancellationToken cancellationToken,
-        string apiKeyEnv,
-        string model,
-        string baseUrl,
-        string providerName)
-    {
-        var key = Environment.GetEnvironmentVariable(apiKeyEnv)
-                  ?? throw new InvalidOperationException($"{apiKeyEnv} is required for the {providerName} coding agent.");
-        var tools = new WorkspaceTools(work);
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(3) };
-        var client = new OpenAiToolClient(http, key, model, baseUrl, providerName);
-        await RunOpenAiTurnsAsync(context, ticket, tools, client, model, providerName, TurnCap(), cancellationToken);
-    }
-
-    private static (string System, string User, string Intent) Prompt(PipelineContext context, Ticket ticket, WorkspaceTools tools)
+    private static (string System, string User, string Intent) Prompt(
+        PipelineContext context, Ticket ticket, WorkspaceTools tools)
     {
         var intent = InferIntent(ticket);
         var system = $"""
@@ -159,256 +172,6 @@ public sealed class CodingAgentLoop
         return maxTools > 0 ? Math.Max(8, maxTools) : MaxTurns;
     }
 
-    private static async Task RunGeminiTurnsAsync(
-        PipelineContext context, Ticket ticket, WorkspaceTools tools, GeminiToolClient client, string model, int maxTurns, CancellationToken cancellationToken)
-    {
-        var (system, user, intent) = Prompt(context, ticket, tools);
-        var contents = new List<object>
-        {
-            new { role = "user", parts = new object[] { new { text = user } } }
-        };
-
-        Console.WriteLine($"[agent] Starting coding loop ({intent}) provider=gemini");
-        LlmCallContext.CurrentRole = "coding";
-        LlmCallContext.CurrentTier = "cheap";
-        RunLog.Event(
-            "agent.started",
-            context,
-            fields: [("provider", "gemini"), ("model", model), ("maxTurns", maxTurns), ("intent", intent)]);
-
-        for (var turn = 1; turn <= maxTurns; turn++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            RunLog.Event("agent.turn", context, fields: [("turn", turn), ("maxTurns", maxTurns)]);
-            var reply = await client.GenerateAsync(system, contents, cancellationToken);
-            var calls = reply.Parts.Where(p => p.IsFunction).ToList();
-            var text = string.Join("\n", reply.Parts.Select(p => p.Text).Where(t => !string.IsNullOrWhiteSpace(t)));
-
-            if (calls.Count == 0)
-            {
-                if (!string.IsNullOrWhiteSpace(text))
-                    Console.WriteLine($"[agent] {text[..Math.Min(400, text.Length)]}");
-                if (tools.ProductChangeCount > 0)
-                {
-                    context.AgentSummary = text;
-                    break;
-                }
-
-                contents.Add(new { role = "model", parts = new object[] { new { text = text ?? "" } } });
-                contents.Add(new
-                {
-                    role = "user",
-                    parts = new object[]
-                    {
-                        new { text = "You have not changed product source yet. Use write_file, then finish." }
-                    }
-                });
-                continue;
-            }
-
-            var modelParts = new List<object>();
-            var fnResponses = new List<object>();
-            var finished = false;
-
-            foreach (var call in calls)
-            {
-                Console.WriteLine($"[agent] tool {call.FunctionName}");
-                var argsDict = new Dictionary<string, object?>();
-                try
-                {
-                    using var argsDoc = JsonDocument.Parse(call.FunctionArgs ?? "{}");
-                    foreach (var prop in argsDoc.RootElement.EnumerateObject())
-                        argsDict[prop.Name] = prop.Value.ValueKind == JsonValueKind.String
-                            ? prop.Value.GetString()
-                            : prop.Value.GetRawText();
-                }
-                catch
-                {
-                    // keep empty args
-                }
-
-                modelParts.Add(new
-                {
-                    functionCall = new
-                    {
-                        name = call.FunctionName,
-                        args = argsDict
-                    }
-                });
-
-                var result = Execute(context, tools, call.FunctionName!, call.FunctionArgs ?? "{}", turn);
-                if (call.FunctionName == "finish")
-                {
-                    finished = true;
-                    context.AgentSummary = result;
-                }
-
-                fnResponses.Add(new
-                {
-                    functionResponse = new
-                    {
-                        name = call.FunctionName,
-                        response = new Dictionary<string, string> { ["result"] = result }
-                    }
-                });
-            }
-
-            contents.Add(new { role = "model", parts = modelParts });
-            contents.Add(new { role = "user", parts = fnResponses });
-
-            if (finished)
-                break;
-        }
-
-        Finish(context, tools);
-    }
-
-    private static async Task RunAnthropicTurnsAsync(
-        PipelineContext context, Ticket ticket, WorkspaceTools tools, AnthropicToolClient client, string model, int maxTurns, CancellationToken cancellationToken)
-    {
-        var (system, user, intent) = Prompt(context, ticket, tools);
-        var messages = new List<object> { new { role = "user", content = user } };
-
-        Console.WriteLine($"[agent] Starting coding loop ({intent}) provider=anthropic model={model}");
-        LlmCallContext.CurrentRole = "coding";
-        LlmCallContext.CurrentTier = "cheap";
-        RunLog.Event(
-            "agent.started",
-            context,
-            fields: [("provider", "anthropic"), ("model", model), ("maxTurns", maxTurns), ("intent", intent)]);
-
-        for (var turn = 1; turn <= maxTurns; turn++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            RunLog.Event("agent.turn", context, fields: [("turn", turn), ("maxTurns", maxTurns)]);
-            var reply = await client.GenerateAsync(system, messages, cancellationToken);
-            var calls = reply.Parts.Where(p => p.IsFunction).ToList();
-            var text = string.Join("\n", reply.Parts.Select(p => p.Text).Where(t => !string.IsNullOrWhiteSpace(t)));
-
-            if (calls.Count == 0)
-            {
-                if (!string.IsNullOrWhiteSpace(text))
-                    Console.WriteLine($"[agent] {text[..Math.Min(400, text.Length)]}");
-                if (tools.ProductChangeCount > 0)
-                {
-                    context.AgentSummary = text;
-                    break;
-                }
-
-                messages.Add(new { role = "assistant", content = reply.RawContentBlocks });
-                messages.Add(new
-                {
-                    role = "user",
-                    content = "You have not changed product source yet. Use write_file, then finish."
-                });
-                continue;
-            }
-
-            var finished = false;
-            var toolResults = new List<object>();
-            foreach (var call in calls)
-            {
-                Console.WriteLine($"[agent] tool {call.FunctionName}");
-                var result = Execute(context, tools, call.FunctionName!, call.FunctionArgsJson ?? "{}", turn);
-                if (call.FunctionName == "finish")
-                {
-                    finished = true;
-                    context.AgentSummary = result;
-                }
-
-                toolResults.Add(new
-                {
-                    type = "tool_result",
-                    tool_use_id = call.ToolUseId,
-                    content = result
-                });
-            }
-
-            messages.Add(new { role = "assistant", content = reply.RawContentBlocks });
-            messages.Add(new { role = "user", content = toolResults });
-
-            if (finished)
-                break;
-        }
-
-        Finish(context, tools);
-    }
-
-    private static async Task RunOpenAiTurnsAsync(
-        PipelineContext context,
-        Ticket ticket,
-        WorkspaceTools tools,
-        OpenAiToolClient client,
-        string model,
-        string providerName,
-        int maxTurns,
-        CancellationToken cancellationToken)
-    {
-        var (system, user, intent) = Prompt(context, ticket, tools);
-        var messages = new List<object> { new { role = "user", content = user } };
-        Console.WriteLine($"[agent] Starting coding loop ({intent}) provider={providerName} model={model}");
-        LlmCallContext.CurrentRole = "coding";
-        LlmCallContext.CurrentTier = "cheap";
-        RunLog.Event(
-            "agent.started",
-            context,
-            fields: [("provider", providerName), ("model", model), ("maxTurns", maxTurns), ("intent", intent)]);
-
-        for (var turn = 1; turn <= maxTurns; turn++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            RunLog.Event("agent.turn", context, fields: [("turn", turn), ("maxTurns", maxTurns)]);
-            var reply = await client.GenerateAsync(system, messages, cancellationToken);
-            var calls = reply.Parts.Where(p => p.IsFunction).ToList();
-            var text = string.Join("\n", reply.Parts.Select(p => p.Text).Where(t => !string.IsNullOrWhiteSpace(t)));
-
-            if (calls.Count == 0)
-            {
-                if (!string.IsNullOrWhiteSpace(text))
-                    Console.WriteLine($"[agent] {text[..Math.Min(400, text.Length)]}");
-                if (tools.ProductChangeCount > 0)
-                {
-                    context.AgentSummary = text;
-                    break;
-                }
-
-                messages.Add(new { role = "assistant", content = text ?? "" });
-                messages.Add(new { role = "user", content = "You have not changed product source yet. Use write_file, then finish." });
-                continue;
-            }
-
-            var toolCalls = new List<object>();
-            var toolResults = new List<object>();
-            var finished = false;
-            foreach (var call in calls)
-            {
-                Console.WriteLine($"[agent] tool {call.FunctionName}");
-                var id = string.IsNullOrWhiteSpace(call.ToolCallId) ? Guid.NewGuid().ToString("N") : call.ToolCallId;
-                toolCalls.Add(new
-                {
-                    id,
-                    type = "function",
-                    function = new { name = call.FunctionName, arguments = call.FunctionArgs ?? "{}" }
-                });
-                var result = Execute(context, tools, call.FunctionName!, call.FunctionArgs ?? "{}", turn);
-                if (call.FunctionName == "finish")
-                {
-                    finished = true;
-                    context.AgentSummary = result;
-                }
-
-                toolResults.Add(new { role = "tool", tool_call_id = id, content = result });
-            }
-
-            messages.Add(new { role = "assistant", content = text ?? "", tool_calls = toolCalls });
-            messages.AddRange(toolResults);
-            if (finished)
-                break;
-        }
-
-        Finish(context, tools);
-    }
-
     private static void Finish(PipelineContext context, WorkspaceTools tools)
     {
         context.ProductFilesChanged = tools.ProductChangeCount;
@@ -436,7 +199,7 @@ public sealed class CodingAgentLoop
             && product.All(p => p.EndsWith(".md", StringComparison.OrdinalIgnoreCase)))
         {
             throw new InvalidOperationException(
-                "Agent only changed markdown (.md). Expected application source (HTML/JS/CSS/…). Refusing PR.");
+                "Agent only changed markdown (.md). Expected application source (HTML/JS/CSS/...). Refusing PR.");
         }
     }
 
@@ -450,7 +213,8 @@ public sealed class CodingAgentLoop
         return "bug fix";
     }
 
-    private static string Execute(PipelineContext context, WorkspaceTools tools, string name, string argsJson, int turn)
+    private static string Execute(
+        PipelineContext context, WorkspaceTools tools, string name, string argsJson, int turn)
     {
         RunBudget.Current?.AddToolCalls(1);
         using var args = JsonDocument.Parse(string.IsNullOrWhiteSpace(argsJson) ? "{}" : argsJson);
