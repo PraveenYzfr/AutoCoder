@@ -3,6 +3,7 @@ using AutoCoder.Core.Llm;
 
 namespace AutoCoder.Tests;
 
+[Collection(ProcessEnvStateCollection.Name)]
 public sealed class ModelPickerTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "ac-models", Guid.NewGuid().ToString("N"));

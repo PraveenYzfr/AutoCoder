@@ -6,6 +6,7 @@ using AutoCoder.Core.Runs;
 
 namespace AutoCoder.Tests;
 
+[Collection(ProcessEnvStateCollection.Name)]
 public sealed class WorkspaceAndPricingAndConfigTests
 {
     [Fact]

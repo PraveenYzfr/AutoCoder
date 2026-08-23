@@ -19,6 +19,11 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\AutoCoder.Abstractions\AutoCoder.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\AutoCoder.Core\AutoCoder.Core.csproj" />
+    <ProjectReference Include="..\..\src\AutoCoder.Server\AutoCoder.Server.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
 </Project>
