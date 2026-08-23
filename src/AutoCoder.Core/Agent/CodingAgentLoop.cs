@@ -46,13 +46,7 @@ public sealed class CodingAgentLoop
                 break;
             case "anthropic":
             case "claude":
-                Console.WriteLine("[agent] Anthropic has no coding tool loop; using cheap DeepSeek for file edits.");
-                await RunOpenAiCompatibleAsync(
-                    context, work, ticket, cancellationToken,
-                    "DEEPSEEK_API_KEY",
-                    DeepSeekModels.Flash,
-                    "https://api.deepseek.com/v1",
-                    "deepseek");
+                await RunAnthropicAsync(context, work, ticket, cancellationToken, model);
                 break;
             default:
                 await RunOpenAiCompatibleAsync(
@@ -82,6 +76,24 @@ public sealed class CodingAgentLoop
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(3) };
         var client = new GeminiToolClient(http, key, model);
         await RunGeminiTurnsAsync(context, ticket, tools, client, model, TurnCap(), cancellationToken);
+    }
+
+    private async Task RunAnthropicAsync(
+        PipelineContext context, string work, Ticket ticket, CancellationToken cancellationToken, string model)
+    {
+        var key = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY")
+                  ?? throw new InvalidOperationException("ANTHROPIC_API_KEY is required for the coding agent.");
+
+        if (string.IsNullOrWhiteSpace(model)
+            || model.Contains("deepseek", StringComparison.OrdinalIgnoreCase)
+            || model.Contains("gpt-", StringComparison.OrdinalIgnoreCase)
+            || model.Contains("gemini", StringComparison.OrdinalIgnoreCase))
+            model = "claude-sonnet-5";
+
+        var tools = new WorkspaceTools(work);
+        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(3) };
+        var client = new AnthropicToolClient(http, key, model);
+        await RunAnthropicTurnsAsync(context, ticket, tools, client, model, TurnCap(), cancellationToken);
     }
 
     private async Task RunOpenAiCompatibleAsync(
@@ -243,6 +255,77 @@ public sealed class CodingAgentLoop
 
             contents.Add(new { role = "model", parts = modelParts });
             contents.Add(new { role = "user", parts = fnResponses });
+
+            if (finished)
+                break;
+        }
+
+        Finish(context, tools);
+    }
+
+    private static async Task RunAnthropicTurnsAsync(
+        PipelineContext context, Ticket ticket, WorkspaceTools tools, AnthropicToolClient client, string model, int maxTurns, CancellationToken cancellationToken)
+    {
+        var (system, user, intent) = Prompt(context, ticket, tools);
+        var messages = new List<object> { new { role = "user", content = user } };
+
+        Console.WriteLine($"[agent] Starting coding loop ({intent}) provider=anthropic model={model}");
+        LlmCallContext.CurrentRole = "coding";
+        LlmCallContext.CurrentTier = "cheap";
+        RunLog.Event(
+            "agent.started",
+            context,
+            fields: [("provider", "anthropic"), ("model", model), ("maxTurns", maxTurns), ("intent", intent)]);
+
+        for (var turn = 1; turn <= maxTurns; turn++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            RunLog.Event("agent.turn", context, fields: [("turn", turn), ("maxTurns", maxTurns)]);
+            var reply = await client.GenerateAsync(system, messages, cancellationToken);
+            var calls = reply.Parts.Where(p => p.IsFunction).ToList();
+            var text = string.Join("\n", reply.Parts.Select(p => p.Text).Where(t => !string.IsNullOrWhiteSpace(t)));
+
+            if (calls.Count == 0)
+            {
+                if (!string.IsNullOrWhiteSpace(text))
+                    Console.WriteLine($"[agent] {text[..Math.Min(400, text.Length)]}");
+                if (tools.ProductChangeCount > 0)
+                {
+                    context.AgentSummary = text;
+                    break;
+                }
+
+                messages.Add(new { role = "assistant", content = reply.RawContentBlocks });
+                messages.Add(new
+                {
+                    role = "user",
+                    content = "You have not changed product source yet. Use write_file, then finish."
+                });
+                continue;
+            }
+
+            var finished = false;
+            var toolResults = new List<object>();
+            foreach (var call in calls)
+            {
+                Console.WriteLine($"[agent] tool {call.FunctionName}");
+                var result = Execute(context, tools, call.FunctionName!, call.FunctionArgsJson ?? "{}", turn);
+                if (call.FunctionName == "finish")
+                {
+                    finished = true;
+                    context.AgentSummary = result;
+                }
+
+                toolResults.Add(new
+                {
+                    type = "tool_result",
+                    tool_use_id = call.ToolUseId,
+                    content = result
+                });
+            }
+
+            messages.Add(new { role = "assistant", content = reply.RawContentBlocks });
+            messages.Add(new { role = "user", content = toolResults });
 
             if (finished)
                 break;

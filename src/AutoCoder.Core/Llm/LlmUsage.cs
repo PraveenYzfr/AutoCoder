@@ -60,6 +60,13 @@ internal static class LlmUsage
         Add("gemini", model, prompt, completion);
     }
 
+    public static void AddAnthropicUsage(string model, string rawJson)
+    {
+        if (!TryReadAnthropicUsage(rawJson, out var prompt, out var completion))
+            return;
+        Add("anthropic", model, prompt, completion);
+    }
+
     public static RunBudget? Current => RunBudget.Current;
 
     private static bool TryReadOpenAiUsage(string raw, out int prompt, out int completion)
@@ -93,6 +100,25 @@ internal static class LlmUsage
                 return false;
             prompt = usage.TryGetProperty("promptTokenCount", out var p) ? p.GetInt32() : 0;
             completion = usage.TryGetProperty("candidatesTokenCount", out var c) ? c.GetInt32() : 0;
+            return prompt > 0 || completion > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryReadAnthropicUsage(string raw, out int prompt, out int completion)
+    {
+        prompt = 0;
+        completion = 0;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(raw);
+            if (!doc.RootElement.TryGetProperty("usage", out var usage))
+                return false;
+            prompt = usage.TryGetProperty("input_tokens", out var p) ? p.GetInt32() : 0;
+            completion = usage.TryGetProperty("output_tokens", out var c) ? c.GetInt32() : 0;
             return prompt > 0 || completion > 0;
         }
         catch
