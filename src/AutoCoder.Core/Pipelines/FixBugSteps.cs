@@ -3,6 +3,7 @@ using AutoCoder.Abstractions;
 using AutoCoder.Abstractions.Config;
 using AutoCoder.Core.Agent;
 using AutoCoder.Core.Config;
+using AutoCoder.Core.GitHub;
 using AutoCoder.Core.Runs;
 
 namespace AutoCoder.Core.Pipelines;
@@ -149,7 +150,7 @@ public sealed class ProvisionSandboxStep(ISandboxRunner sandbox, IRepoHost repoH
         Directory.CreateDirectory(Path.GetDirectoryName(work)!);
 
         context.WorkDirectory = work;
-        context.BranchName = $"autocoder/{ticket.Key.ToLowerInvariant()}";
+        context.BranchName = AutocoderBranchNaming.ForTicket(ticket.Key, context.RunId);
 
         await sandbox.ProvisionAsync(new SandboxSpec
         {
@@ -360,7 +361,7 @@ public sealed class CommitAndOpenPrStep(IRepoHost repoHost) : IPipelineStep
         var ticket = context.Ticket ?? throw new InvalidOperationException("Ticket required.");
         var repo = context.RepoUrl ?? throw new InvalidOperationException("RepoUrl required.");
         var work = context.WorkDirectory ?? throw new InvalidOperationException("WorkDirectory required.");
-        var branch = context.BranchName ?? $"autocoder/{ticket.Key.ToLowerInvariant()}";
+        var branch = context.BranchName ?? AutocoderBranchNaming.ForTicket(ticket.Key, context.RunId);
 
         if (!context.DryRun)
         {
