@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using AutoCoder.Abstractions.Config;
 
 namespace AutoCoder.Core.Llm;
@@ -8,19 +9,38 @@ public sealed record CatalogModel(string Id);
 
 public sealed record CatalogProvider(string Name, IReadOnlyList<CatalogModel> Models, string? Error);
 
-public static class ModelCatalog
+/// <summary>
+/// Live provider /models inventories, filtered to AutoCoder-usable chat/coding LLMs.
+/// Non-chat modalities (audio, image, video, embeddings, guards, TTS) are dropped.
+/// Dated snapshot IDs are dropped when a stable alias family is preferred.
+/// Inventory baseline: September 2026 official docs + live /models probes.
+/// </summary>
+public static partial class ModelCatalog
 {
+    // Global modality / specialty junk that never belongs in an AutoCoder role picker.
     private static readonly string[] Unusable =
     [
-        "whisper", "tts-", "-tts", "orpheus", "prompt-guard", "embed", "embedding",
-        "dall-e", "dalle", "moderation", "transcri", "speech-to", "text-to-speech",
-        "rerank", "classifier", "vision-exp"
+        "whisper", "tts", "orpheus", "prompt-guard", "safeguard",
+        "embed", "embedding", "moderation", "transcri", "diarize",
+        "speech-to", "text-to-speech", "realtime", "audio",
+        "dall-e", "dalle", "gpt-image", "chatgpt-image", "sora",
+        "image", "imagen", "veo-", "lyria", "nano-banana",
+        "rerank", "classifier", "vision-exp", "computer-use",
+        "deep-research", "robotics", "antigravity", "aqa",
+        "babbage", "davinci", "instruct", "search-preview", "search-api",
+        "live-translate", "native-audio", "-live-", "-live"
     ];
 
     private static readonly TimeSpan Ttl = TimeSpan.FromMinutes(15);
     private static readonly object Gate = new();
     private static List<CatalogProvider>? _cache;
     private static DateTime _cacheUtc;
+
+    [GeneratedRegex(@"^gpt-5\.(\d+)", RegexOptions.CultureInvariant)]
+    private static partial Regex OpenAiGpt5Minor();
+
+    [GeneratedRegex(@"-\d{4}-\d{2}-\d{2}$", RegexOptions.CultureInvariant)]
+    private static partial Regex OpenAiDatedSnapshot();
 
     public static async Task<IReadOnlyList<CatalogProvider>> ListAsync(CancellationToken cancellationToken = default)
     {
@@ -118,10 +138,109 @@ public static class ModelCatalog
         }).ToList();
     }
 
-    internal static bool IsChatModel(string id)
+    /// <summary>True when <paramref name="id"/> is a text chat/coding model suitable for AutoCoder roles.</summary>
+    internal static bool IsChatModel(string id) => IsChatModel(id, provider: null);
+
+    internal static bool IsChatModel(string id, string? provider)
     {
-        var n = (id ?? "").ToLowerInvariant();
-        return Unusable.All(bad => !n.Contains(bad, StringComparison.Ordinal));
+        if (string.IsNullOrWhiteSpace(id))
+            return false;
+
+        var n = id.ToLowerInvariant();
+        if (Unusable.Any(bad => n.Contains(bad, StringComparison.Ordinal)))
+            return false;
+
+        return (provider?.Trim().ToLowerInvariant()) switch
+        {
+            "deepseek" => IsDeepSeekChat(n),
+            "groq" => IsGroqChat(n),
+            "openai" => IsOpenAiChat(n),
+            "anthropic" => IsAnthropicChat(n),
+            "gemini" => IsGeminiChat(n),
+            _ => true
+        };
+    }
+
+    /// <summary>
+    /// DeepSeek (Sept 2026): deepseek-v4-flash, deepseek-v4-pro.
+    /// Vision-exp is already denied via Unusable.
+    /// </summary>
+    private static bool IsDeepSeekChat(string n) =>
+        n is "deepseek-v4-flash" or "deepseek-v4-pro"
+        || (n.StartsWith("deepseek-v4-", StringComparison.Ordinal)
+            && !n.Contains("vision", StringComparison.Ordinal));
+
+    /// <summary>
+    /// Groq (Sept 2026): gpt-oss, Qwen 3.x, MiniMax, Llama when present.
+    /// Drops Compound systems, Whisper, Orpheus, prompt-guard, safeguard.
+    /// </summary>
+    private static bool IsGroqChat(string n)
+    {
+        if (n.StartsWith("groq/compound", StringComparison.Ordinal))
+            return false;
+        if (n.Contains("gpt-oss", StringComparison.Ordinal))
+            return true;
+        if (n.StartsWith("qwen/", StringComparison.Ordinal) || n.Contains("qwen", StringComparison.Ordinal))
+            return true;
+        if (n.Contains("minimax", StringComparison.Ordinal))
+            return true;
+        if (n.Contains("llama", StringComparison.Ordinal))
+            return true;
+        if (n.StartsWith("allam-", StringComparison.Ordinal))
+            return true;
+        return false;
+    }
+
+    /// <summary>
+    /// OpenAI (Sept 2026): GPT-5.6 Sol/Terra/Luna + GPT-5.3/5.4/5.5 chat/coding aliases.
+    /// Drops modality models, ChatGPT-only IDs, dated snapshots, GPT-4.x, and older GPT-5.0–5.2.
+    /// </summary>
+    private static bool IsOpenAiChat(string n)
+    {
+        if (OpenAiDatedSnapshot().IsMatch(n))
+            return false;
+        if (n is "chat-latest" || n.EndsWith("-chat-latest", StringComparison.Ordinal) || n.StartsWith("chatgpt-", StringComparison.Ordinal))
+            return false;
+
+        var minor = OpenAiGpt5Minor().Match(n);
+        if (!minor.Success)
+            return false;
+        return int.TryParse(minor.Groups[1].Value, out var ver) && ver >= 3;
+    }
+
+    /// <summary>
+    /// Anthropic (Sept 2026): Claude Fable/Opus/Sonnet/Haiku chat models.
+    /// Prefer undated aliases; keep dated IDs only when that is what /models returns for a family.
+    /// </summary>
+    private static bool IsAnthropicChat(string n)
+    {
+        if (!n.StartsWith("claude-", StringComparison.Ordinal))
+            return false;
+        // Mythos is limited-access; omit from the general picker.
+        if (n.Contains("mythos", StringComparison.Ordinal))
+            return false;
+        return true;
+    }
+
+    /// <summary>
+    /// Gemini (Sept 2026): text Flash/Pro/Lite + Gemma instruct.
+    /// Image / TTS / Live / music / video / research agents are excluded.
+    /// </summary>
+    private static bool IsGeminiChat(string n)
+    {
+        if (n.StartsWith("gemma-", StringComparison.Ordinal) && n.Contains("-it", StringComparison.Ordinal))
+            return true;
+        if (n is "gemini-flash-latest" or "gemini-flash-lite-latest" or "gemini-pro-latest")
+            return true;
+        if (!n.StartsWith("gemini-", StringComparison.Ordinal))
+            return false;
+        // Omni / custom-tool / high-res experimental variants are not general coding LLMs.
+        if (n.Contains("omni", StringComparison.Ordinal) || n.Contains("customtools", StringComparison.Ordinal)
+            || n.Contains("high-res", StringComparison.Ordinal))
+            return false;
+        // Keep numbered Gemini text models: gemini-3.8-flash, gemini-2.5-pro, gemini-3-flash-preview, …
+        return n.Contains("flash", StringComparison.Ordinal)
+               || n.Contains("pro", StringComparison.Ordinal);
     }
 
     private static async Task<CatalogProvider> FetchOpenAi(
@@ -138,7 +257,7 @@ public static class ModelCatalog
             var raw = await res.Content.ReadAsStringAsync(cancellationToken);
             if (!res.IsSuccessStatusCode)
                 return new CatalogProvider(name, [], $"HTTP {(int)res.StatusCode}");
-            return new CatalogProvider(name, ReadOpenAiIds(raw), null);
+            return new CatalogProvider(name, ReadOpenAiIds(raw, name), null);
         }
         catch (Exception ex)
         {
@@ -160,7 +279,7 @@ public static class ModelCatalog
             var raw = await res.Content.ReadAsStringAsync(cancellationToken);
             if (!res.IsSuccessStatusCode)
                 return new CatalogProvider("anthropic", [], $"HTTP {(int)res.StatusCode}");
-            return new CatalogProvider("anthropic", ReadOpenAiIds(raw), null);
+            return new CatalogProvider("anthropic", ReadOpenAiIds(raw, "anthropic"), null);
         }
         catch (Exception ex)
         {
@@ -178,7 +297,7 @@ public static class ModelCatalog
         {
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
             using var res = await http.GetAsync(
-                $"https://generativelanguage.googleapis.com/v1beta/models?key={Uri.EscapeDataString(key)}",
+                $"https://generativelanguage.googleapis.com/v1beta/models?key={Uri.EscapeDataString(key)}&pageSize=200",
                 cancellationToken);
             var raw = await res.Content.ReadAsStringAsync(cancellationToken);
             if (!res.IsSuccessStatusCode)
@@ -193,12 +312,14 @@ public static class ModelCatalog
                     if (string.IsNullOrWhiteSpace(name))
                         continue;
                     var id = name.StartsWith("models/", StringComparison.Ordinal) ? name["models/".Length..] : name;
-                    if (IsChatModel(id))
+                    if (!SupportsGenerateContent(m))
+                        continue;
+                    if (IsChatModel(id, "gemini"))
                         ids.Add(new CatalogModel(id));
                 }
             }
 
-            return new CatalogProvider("gemini", ids, null);
+            return new CatalogProvider("gemini", SortIds(ids), null);
         }
         catch (Exception ex)
         {
@@ -206,7 +327,21 @@ public static class ModelCatalog
         }
     }
 
-    private static List<CatalogModel> ReadOpenAiIds(string raw)
+    private static bool SupportsGenerateContent(JsonElement model)
+    {
+        if (!model.TryGetProperty("supportedGenerationMethods", out var methods)
+            || methods.ValueKind != JsonValueKind.Array)
+            return false;
+        foreach (var method in methods.EnumerateArray())
+        {
+            if (method.GetString()?.Equals("generateContent", StringComparison.OrdinalIgnoreCase) == true)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static List<CatalogModel> ReadOpenAiIds(string raw, string provider)
     {
         using var doc = JsonDocument.Parse(raw);
         var ids = new List<CatalogModel>();
@@ -215,12 +350,15 @@ public static class ModelCatalog
         foreach (var m in data.EnumerateArray())
         {
             var id = m.TryGetProperty("id", out var p) ? p.GetString() : null;
-            if (!string.IsNullOrWhiteSpace(id) && IsChatModel(id))
+            if (!string.IsNullOrWhiteSpace(id) && IsChatModel(id, provider))
                 ids.Add(new CatalogModel(id));
         }
 
-        return ids;
+        return SortIds(ids);
     }
+
+    private static List<CatalogModel> SortIds(List<CatalogModel> ids) =>
+        ids.OrderBy(m => m.Id, StringComparer.OrdinalIgnoreCase).ToList();
 }
 
 public sealed record RoleEffective(string Role, string Provider, string Model, string Source);

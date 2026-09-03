@@ -55,7 +55,7 @@ agents:
     endpoint: https://api.deepseek.com/v1
   groq:
     type: groq
-    model: llama-3.1-8b-instant
+    model: openai/gpt-oss-20b
     endpoint: https://api.groq.com/openai/v1
 
 repos:

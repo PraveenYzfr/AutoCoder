@@ -212,11 +212,11 @@ public static class AutoCoderConfigLoader
                 slot.Endpoint = "https://api.deepseek.com/v1";
                 break;
             case "groq":
-                slot.Model = "llama-3.1-8b-instant";
+                slot.Model = "openai/gpt-oss-20b";
                 slot.Endpoint = "https://api.groq.com/openai/v1";
                 break;
             case "openai":
-                slot.Model = "gpt-4o";
+                slot.Model = "gpt-5.6-terra";
                 slot.Endpoint = "https://api.openai.com/v1";
                 break;
             case "anthropic":
